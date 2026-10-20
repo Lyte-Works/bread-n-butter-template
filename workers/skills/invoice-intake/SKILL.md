@@ -1,0 +1,421 @@
+---
+name: invoice-intake
+description: Read a vendor invoice or order confirmation (PDF, email, photo) and write it into the field's Invoices and Invoice Items rays — header, every line with category, storage, pack breakdown and case/split/paid prices, reconciled to the invoice total — then match each line to its Vendor Item, convert it to the ingredient's base unit and update the ingredient's cost. Use whenever someone sends an invoice and asks to add, enter, log, build out or map its items.
+kind: procedure
+---
+
+# Invoice Intake
+
+<!-- Restaurant-repo skill. It carries the exact lyte keys on
+purpose: every invoice lands in the same base structure, and the person
+entering it should never have to look the structure up. Table ids are NOT
+written here — they live in workers/skills/_shared/food-costs-ids.json, read by
+key (`rays.invoice_items`), shared with recipe-costing and the write checker. When a lyte is added
+or renamed on any of the four rays below, update the Base Structure tables here
+in the same change. Vendor-specific reading rules live in workers/skills/invoice-intake/references/<vendor>.md. -->
+
+An invoice is the truth about what came in the door and what it cost. The job is
+to move it into the field without losing anything the paper says and without
+inventing anything it doesn't. Every line ends up with the same shape, whatever
+vendor it came from — and ends up costed in the ingredient's own unit, so a case
+of 24 limes and a 10 lb bag of limes compare as plain numbers.
+
+## Before the first call
+
+1. **Check the ids:** `node workers/skills/_shared/food-costs-ids.cjs --check`. Exit 1 → this restaurant is not handed off yet: write nothing, say which ids are missing, stop.
+2. **Know who can answer.** Headless (the "Run a skill" job, a lane, a schedule — nobody at the keyboard): every human gate in this skill is **park-and-notify** (Human gates below; the convention is `workers/skills/README.md` §Convention 2) — park the decision as a Task Board row, stop that line, keep going with everything it does not block, name each parked row in the report. A person present: ask instead, and park nothing.
+
+## Base Structure
+
+Four rays, all in the **Food Costs** prism. Write by lyte **key**, never by label.
+Each ray's id is in `workers/skills/_shared/food-costs-ids.json` under `rays.<key>`
+— read it from there before the first call; never type an id from memory.
+
+```
+Ingredient  ←── Vendor Item  ←── Invoice Item  ──→ Invoice
+(base unit,     (vendor + code,   (one line, as
+ each weight,    pack, base        printed, + base
+ last cost)      units / case)     qty + cost/base)
+```
+
+An ingredient is what the kitchen uses. A vendor item is one vendor's product
+for it — mapped to the ingredient ONCE, with the conversion from one case to the
+ingredient's base unit. An invoice line is one purchase of a vendor item. Many
+vendor items can feed one ingredient (US Foods arugula, Baldor arugula); many
+lines can buy one vendor item (every week's order).
+
+### Invoices — `rays.invoices`
+
+One entry per invoice / order.
+
+| Key | Label | Type | Fill with |
+|---|---|---|---|
+| *(title)* | — | title | `<Vendor> — #<invoice_no> — <delivery or invoice date YYYY-MM-DD>` |
+| `vendor` | Vendor | text (required) | The distributor who bills you (US Foods, Baldor) — not the brand on the product |
+| `invoice_no` | Invoice # | text | The vendor's invoice or order number, as printed |
+| `invoice_status` | Status | select | `ordered` · `received` · `partial` · `disputed` (see Status below) |
+| `invoice_date` | Invoice Date | date | Date the invoice/order was issued |
+| `delivery_date` | Delivery Date | date | Delivery date (expected, if that's all the paper gives) |
+| `invoice_total` | Invoice Total | number | The printed grand total |
+| `invoice_file` | Invoice File | media | The PDF/photo. Usually already attached by whoever created the entry |
+| `location_id` | Location | relation → Locations | Leave empty until the field has locations again |
+
+Do **not** try to add `invoice_number` or `status` as keys — both are taken on
+this ray (hidden legacy lytes) and `add_lytes` returns a bare 500.
+
+### Invoice Items — `rays.invoice_items`
+
+One entry per invoice line.
+
+| Key | Label | Type | Fill with |
+|---|---|---|---|
+| *(title)* | — | title | Clean, kitchen-friendly name: "Parmesan, Shaved", "Baby Arugula". Inch marks as `in`, never `\"` (the backslash is stored literally) |
+| `name` | Purchase | text | `<Vendor> <delivery date YYYY-MM-DD> · <qty> <CS\|EA> @ $<unit_price>` — the label the ingredient's Invoice Items chips show |
+| `invoice_id` | Invoice | relation → Invoices | The parent invoice entry's id (a plain uuid string) |
+| `delivery_date` | Delivery Date | date | The invoice's `delivery_date`, copied onto every line — Vendor Items' purchase history rolls up from it |
+| `vendor_item_id` | Vendor Item | relation → Vendor Items | The vendor item matched by vendor + item code (see Mapping) |
+| `description` | Description | text | The vendor's line text **verbatim**, wraps joined with a space |
+| `category` | Category | select | One value from Categories below |
+| `storage` | Storage | select | `dry` · `refrigerated` · `frozen` |
+| `item_code` | Item Code | text | Vendor SKU / product number, without `#` |
+| `brand` | Brand | text | Manufacturer, title-cased ("Grande Cheese Company"). "Packer" when the vendor prints Packer (generic) |
+| `pack_size` | Pack Size | text | The pack exactly as printed: `9/3 LB`, `12/.5 PT`, `6/#10 CN` |
+| `pack_count` | Pack Count | number | How many inner packs in one case (`9` in 9/3 LB) |
+| `pack_each_size` | Each Size | number | Size of one inner pack (`3` in 9/3 LB) |
+| `pack_each_unit` | Each Unit | text | Unit of one inner pack, lower-case: `lb` `oz` `g` `fl oz` `L` `gal` `pt` `qt` `ea` `ft` `#10 can` |
+| `pack_name` | Pack Name | text | What one inner pack physically is: `bag` `box` `can` `jug` `tub` `log` `packet` `stick` `roll` `clamshell` `bag-in-box` `pack`. Blank if the paper doesn't say |
+| `quantity` | Quantity | number | How many were ordered/delivered on this line |
+| `unit` | Unit | text | What `quantity` counts: `CS` (full cases) or `EA` (single inner packs, a split) |
+| `case_price` | Case Price | number | Vendor's price for one full case |
+| `split_price` | Split Price | number | Vendor's price for ONE inner pack bought alone. Equals case price when the case holds one pack |
+| `unit_price` | Unit Price | number | What you actually paid per `unit` on this line (= case_price on a CS line, = split_price on an EA line) |
+| `total_cost` | Total Cost | number | The line's extended price, as printed |
+| `ingredient_id` | Ingredient | relation → Ingredients | The vendor item's ingredient (a shortcut copy of that link). Empty for non-ingredients (foil, chemicals, paper) |
+| `base_qty` | Base Qty | number | *Retiring — see Computed columns.* Base units this line bought: CS line → quantity × `base_units_per_case`; EA line → quantity × `base_units_per_case` ÷ `pack_count` |
+| `cost_per_base_unit` | Cost / Base Unit | number | *Retiring.* `total_cost` ÷ `base_qty`, 4 decimals |
+| `case_rate` | Case Rate ($/base unit) | number | *Retiring.* `case_price` ÷ base units per case, 4 decimals — every mapped line |
+| `split_rate` | Split Rate ($/base unit) | number | *Retiring.* `split_price` ÷ base units in ONE of the vendor's eaches, 4 decimals. **Blank** when split_price = case_price (the vendor doesn't sell it split) |
+| `split_premium_pct` | Split Premium % | number | *Retiring.* (split_price ÷ (case_price ÷ pack_count) − 1) × 100, 1 decimal. Blank when not sold split — never 0 |
+| `split_premium` | Split Premium ($) | number | *Retiring.* What THIS line paid over the case rate: EA line → quantity × (split_price − case_price ÷ pack_count); CS line → 0 |
+
+**Computed columns — read-only, never written.** The ray computes these on
+every read from the line's own prices and `{vendor_item_id.base_units_per_case}`.
+Never put their keys in `properties`.
+
+| Key | Computes | Replaces |
+|---|---|---|
+| `base_qty_calc` | EA → quantity × base units/case ÷ pack_count; else quantity × base units/case | `base_qty` |
+| `cost_per_base_unit_calc` | total_cost ÷ that, 4 dp | `cost_per_base_unit` |
+| `case_rate_calc` | case_price ÷ base units/case, 4 dp | `case_rate` |
+| `split_rate_calc` | split_price ÷ (base units/case ÷ pack_count), 4 dp; blank when not sold split | `split_rate` |
+| `split_premium_pct_calc` | (split_price ÷ (case_price ÷ pack_count) − 1) × 100, 1 dp; blank when not sold split | `split_premium_pct` |
+| `split_premium_calc` | EA → quantity × (split_price − case_price ÷ pack_count), 2 dp; else 0 | `split_premium` |
+
+Until the operator archives a *Retiring* key, keep writing it exactly as above
+(the write checker compares it with its own arithmetic). **Once a stored key is
+archived, stop writing it** — the `_calc` column is the number from then on, and
+the checker reads it in the stored key's place. Linking `vendor_item_id` is what
+makes the computed columns fill in: an unmapped line has them blank.
+
+### Vendor Items — `rays.vendor_items`
+
+One entry per vendor product (vendor + item code). Found, not re-created, on
+every later invoice.
+
+| Key | Label | Type | Fill with |
+|---|---|---|---|
+| *(title)* / `name` | Vendor Item | text (required) | `<Ingredient name> — <Vendor> <item code>` |
+| `ingredient_id` | Ingredient | relation → Ingredients | The ingredient this product IS |
+| `vendor` · `item_code` · `brand` · `description` | | text | As on the first invoice line that introduced it |
+| `pack_size` · `pack_count` · `pack_each_size` · `pack_each_unit` · `pack_name` | | text / number | The case, broken down exactly as on Invoice Items |
+| `base_units_per_case` | Base Units / Case | number | How many of the ingredient's base unit one case holds (see Conversions) |
+| `base_unit` | Base Unit | text | The ingredient's `unit`, repeated so the number above reads on its own |
+| `conversion` | Conversion | text | The working, readable: `2 bags × 2 lb × 16 = 64 oz`. Must end in `= <base_units_per_case> <base_unit>` |
+| `verified` | Verified | checkbox | **Operator only.** Write `false` on create; never set it true. Costs built on an unverified row are reported as provisional |
+| `verified_by` | Verified By | person | Operator only — never written by the model |
+| `purchases` | Purchases | relation (many) → Invoice Items | Every line that bought this product — append the new line's id, never replace the list |
+| `last_case_price` | Last Case Price | number | `case_price` from the latest line |
+| `last_purchased` | Last Purchased | date | *Retiring.* Delivery date of the latest line — replaced by `last_purchased_calc` |
+
+Rollups — read-only, computed from `purchases`, never written:
+`last_purchased_calc` (latest `delivery_date`), `purchase_count` (count),
+`case_price_high` / `case_price_low` / `case_price_avg` (max / min / avg of
+`case_price`). They are only as complete as `purchases` and each line's
+`delivery_date` — which is why both are filled on every line.
+
+### Ingredients — `rays.ingredients`
+
+What the kitchen uses. Created when a new vendor item has no ingredient yet.
+
+| Key | Label | Type | Fill with |
+|---|---|---|---|
+| *(title)* / `name` | Ingredient | text (required) | Kitchen name, no vendor jargon, no brand: "Parmesan, Grated", "Chickpeas, Canned" |
+| `category` · `storage` | | select | Same values as Invoice Items |
+| `unit` | Unit | text | The **base unit**: `oz` (sold or used by weight), `fl oz` (by volume), `each` (by the piece/pack). Pick by how RECIPES measure it |
+| `last_cost` | Last Cost | number | `cost_per_base_unit` of the latest line, 4 decimals — what was actually paid |
+| `pack_name` · `pack_weight` · `pack_uom` | | text / number | The inner pack as bought: bag, 2, lb |
+| `each_weight` | Each Weight (oz) | number | Weight of ONE base `each` in oz (a lime, a clamshell, a tortilla, a packet). The bridge between count and weight. Blank until known — never guessed |
+| `each_weight_source` | Each Weight Source | text | Where `each_weight` came from + date: `measured in kitchen (avg of 10), 2026-10-16` · `vendor spec sheet` · `label — <invoice> description`. Required whenever `each_weight` is set |
+| `density` | Density (oz per fl oz) | number | Only when the item is bought by volume and used by weight, or the reverse |
+| `invoice_items` | Invoice Items | relation (many) → Invoice Items | Every line that bought it — append the new line's id, never replace the list |
+| `location_id` | Location | relation → Locations | Leave empty for now |
+
+### Categories (`category` values)
+
+`produce` Produce · `dairy_cheese` Dairy & Cheese · `meat_poultry` Meat & Poultry ·
+`seafood` Seafood · `dry_goods` Dry Goods (canned, dried fruit, grains, beans, flour) ·
+`spices_seasonings` Spices & Seasonings (salt included) · `oils_vinegars` Oils & Vinegars ·
+`sweeteners` Sweeteners (sugar, sugar subs, honey, syrups) · `bakery` Bakery (bread, tortillas, dough) ·
+`beverage` Beverage (non-alcoholic) · `liquor_spirits` Liquor & Spirits · `beer_wine` Beer & Wine ·
+`paper_disposables` Paper & Disposables (foil, wrap, to-go, napkins, cups) ·
+`cleaning_chemical` Cleaning & Chemical · `smallwares` Smallwares
+
+Categorize by what the item **is in the kitchen**, not by where it's stored:
+frozen tortillas are Bakery, frozen pepperoni is Meat & Poultry. If nothing
+fits, stop and ask — don't stretch a category, and don't add an option without
+the operator.
+
+### Status (`invoice_status`)
+
+- `ordered` — an order confirmation, or an invoice for goods not yet checked in. It proves nothing about what arrived.
+- `received` — someone confirmed the delivery matches.
+- `partial` — delivered short, substituted or back-ordered.
+- `disputed` — a price or quantity is wrong and a credit is owed.
+
+## Procedure
+
+1. **Get the text out.** Pull the document's text with its layout kept (a PDF
+   text extractor in layout mode reads vendor invoices cleanly; a plain PDF
+   read may return nothing). Photos and scans: read them directly and say the
+   numbers are read from an image.
+2. **Identify vendor and document type.** Open the matching
+   `workers/skills/invoice-intake/references/<vendor>.md`. No file for this vendor → read the invoice by the
+   general rules here, then write the new reference file as part of the job.
+   Decide: order confirmation or delivery invoice? That sets `invoice_status`.
+2b. **Refuse a duplicate.** List the Invoices ray for an entry with the same
+   `vendor` and `invoice_no`. One exists **and already has Invoice Items** →
+   this invoice is in; write nothing, say so (which entry, how many lines), and
+   stop. A bare header the operator created (the uploaded file attached, no
+   lines yet) is the normal starting point — step 7 updates it.
+3. **List every line before writing anything.** For each: item code,
+   description, brand, pack, quantity + unit, case price, split price, extended
+   price. Lines often wrap across two or three text lines; a price can wrap
+   onto the next line.
+4. **Reconcile.** Sum of extended prices = printed total, to the cent. Each
+   line: quantity × unit_price = extended price. Count of lines = the printed
+   line count if there is one. A mismatch stops the write — find it or tell the
+   operator which line doesn't add up.
+5. **Decide the judgement fields** — category, storage, pack breakdown, pack
+   name, clean title — by the rules below.
+6. **Show the operator** the parsed table (title, code, brand, pack, qty, unit
+   price, total, category, storage) before the first write for a new vendor or
+   whenever a line needed a guess. A known vendor with nothing inferred can go
+   straight in. Headless (no one to show): write the reconciled lines as
+   parsed and put every guess in the report, by line; a new vendor is a parked
+   decision (Human gates below), not a reason to stop the whole invoice.
+7. **Write the header**: update the operator's Invoices entry if they made one
+   (it usually holds the uploaded file), else create it. Read it back.
+8. **Write one line, read it back** with `return_row` (every line carries the
+   invoice's `delivery_date`), confirm the relation and
+   numbers landed as sent. Then write the rest.
+9. **Verify** by listing the Invoice Items for this invoice: right count, every
+   `invoice_id` set, totals sum to `invoice_total`.
+10. **Map** each line (see Mapping): known vendor item → link and cost it;
+    new product → propose vendor item + ingredient + conversion — park it as a
+    Task Board row (Human gates below) and leave the line unmapped, or, when a
+    person is present, show the table and write after they confirm.
+11. **Update** each touched ingredient (`last_cost`, append to `invoice_items`)
+    and vendor item (append the line to `purchases`; `last_case_price`; and
+    `last_purchased` until the operator archives it).
+12. **Verify** — run all nine checks in Verification below, every invoice, no
+    skipping. Fix what fails, re-run, then report.
+12b. **Re-cost recipes** — once the ingredient updates (step 11) have landed,
+    fire the field's **"Re-cost recipes" webhook** (the Automations entry
+    "Re-cost recipes — webhook", id at `workflows.recost_webhook` in the ids
+    file; the app URL is `app_url` in `.lyte/field.json`):
+
+    ```
+    POST <app_url>/api/automations/webhooks/<workflows.recost_webhook>
+    x-webhook-secret: <the entry's trigger_config.secret — held by the caller, never written here>
+    { "trigger": "invoice", "invoice_id": "<this invoice's entry id>",
+      "costed_on": "<delivery date>", "cost_source": "<Vendor> <delivery date>" }
+    ```
+
+    Its run dispatches `.github/workflows/recost.yml`, which re-costs every
+    recipe bottom-up through the entries API and appends a Recipe Cost History
+    row per recipe that moved (the recipe-costing skill's job path). Then read
+    those rows into your report: list Recipe Cost History where `invoice_id`
+    is this invoice (wait for the job — a few minutes; the Actions run is the
+    log) — which dishes moved, by how much, any `alert`. **In the headless
+    job** (`.github/workflows/agent-job.yml`) do not fire it yourself: the job
+    fires it the moment you finish, and the operator reads the rows.
+    **Fallback** when the webhook cannot be fired (no secret in hand, the
+    Automations workspace off): run the **recipe-costing** skill in-session
+    with trigger `invoice`, this invoice's id, its delivery date as
+    `costed_on`, and `<Vendor> <delivery date>` as the cost source — the
+    hand-run calculator path. Skip only if no ingredient's last_cost changed —
+    and say so.
+13. **Report**: the Verification table first, then totals by category and
+    storage, lines mapped automatically vs newly mapped, provisional costs
+    (unverified vendor items), every field left blank or inferred, and the
+    recipe-costing report (which dishes moved, any food-cost alerts).
+
+**Every write to Invoice Items, Vendor Items or Ingredients passes
+`return_row: true`.** The stored row is what gets checked — by you in the
+read-back, and by the write checker (below) the moment it lands.
+
+## Judgement rules
+
+**Pack breakdown.** `a/b UNIT` means `a` inner packs of `b UNIT` each →
+`pack_count a`, `pack_each_size b`, `pack_each_unit unit`. A single
+`b UNIT` means one pack. A count pack like `1000 EA` is `pack_count 1000` and
+the each size comes from the description (`1 GR packet` → `1`, `g`). Read the
+whole description, not just the parentheses: "LOG IN BRINE 11.45 OZ … (5 LB)"
+is 7 logs × 11.45 oz, not one 5 lb pack. Keep the printed form in `pack_size`
+even when the breakdown differs from it.
+
+**Prices.** Three prices, three meanings — never collapse them:
+case_price is the vendor's case, split_price is one pack alone (vendors mark
+splits up, 10–50% over case ÷ count), unit_price is what this line paid. The
+real cost of one pack bought by the case is case_price ÷ pack_count, not the
+split price. A split line (`unit EA`) is the only place unit_price ≠ case_price.
+
+**Storage.** Use the vendor's own words first (REF / FROZEN / SHELF STABLE /
+DRY). Fresh produce, herbs, dairy and raw protein with no word printed are
+refrigerated. Canned, bottled-shelf-stable, paper and chemicals are dry.
+
+**Brand vs vendor.** The vendor bills you; the brand made it. US Foods is the
+vendor on every line of a US Foods invoice; Grande, Truly, Cross Valley Farms
+are brands.
+
+**Blank beats guess.** If the paper doesn't say a pack name or a storage
+condition and it isn't obvious, leave it blank. If you do infer something
+(blackberries in ½-pint clamshells), say so in the report, by line.
+
+**Titles.** Kitchen name, singular product, most-important word first, then
+the qualifier: "Garlic, Peeled Whole Clove (Organic)", "Olive Oil, Extra
+Virgin (Bag-in-Box)". Keep the vendor's raw text in `description` — never edit it.
+
+## Mapping
+
+**Match on vendor + item code**, never on description text — descriptions
+drift, codes don't. Found → that vendor item, its ingredient, its conversion;
+nothing to decide. Not found → a new product: propose it.
+
+**Proposing a new product.** Look for an existing ingredient first (same thing
+the kitchen uses, any vendor). Only create an ingredient when none fits. Rules
+the operator set:
+- One ingredient per thing the kitchen uses differently: shaved and grated
+  parmesan are two ingredients; three kinds of sugar packet are three.
+- Supplies (foil, wrap, chemicals, paper goods) are not ingredients — leave the
+  line unmapped.
+- Same item, different vendor, different selling unit → SAME ingredient, its own
+  vendor item with its own conversion. That is the whole point of the layer.
+
+## Conversions
+
+`base_units_per_case` turns one case into the ingredient's base unit:
+
+| Case sold by | Base unit | base_units_per_case |
+|---|---|---|
+| weight (`4/5 LB`) | oz | count × size × 16 (lb), × 1 (oz), × 0.03527 (g), × 35.274 (kg) |
+| volume (`10 LT`) | fl oz | count × size × 33.814 (L), × 128 (gal), × 32 (qt), × 16 (pt) |
+| count (`10/12 EA`, `1000 EA`, `6/#10 CN`) | each | the number of pieces the kitchen counts (120 tortillas, 1000 packets, 6 cans) |
+| count | oz | pieces × ingredient `each_weight` — needs each_weight; stop and ask if blank |
+| weight | each | total oz ÷ ingredient `each_weight` — same |
+| volume ↔ weight | | through ingredient `density` — same |
+
+Worked example — limes, base unit `each`, each_weight 2.5 oz:
+vendor A sells 24 ea for $12.00 → 24 base units → $0.50/lime;
+vendor B sells 10 lb for $18.00 → 160 oz ÷ 2.5 = 64 base units → $0.28/lime.
+
+Cost basis is **what was paid**: a split line costs at its split price
+(grated parmesan bought as one bag: $41.21 ÷ 80 oz), not the case rate.
+Catch-weight items (`PR`, random weight) cost at nominal weight until delivery
+check-in records the actual.
+
+## Verification
+
+A wrong conversion repeats on every purchase after it, so every invoice is
+checked the same way, every time. Two independent computations must agree
+before a number is trusted; a human signs off where judgement is needed.
+
+**Before writing**
+
+| # | Check | Pass when |
+|---|---|---|
+| 1 | Totals | Σ line totals = printed invoice total to the cent; quantity × unit_price = total_cost on every line |
+| 2 | Conversions, two ways | `base_units_per_case` computed from the pack fields = the stored number = the number the `conversion` text ends in |
+| 3 | Pack unchanged | the line's printed pack = its vendor item's pack. Different → **stop**: the vendor changed the pack under the same code; never apply the old conversion |
+| 4 | Unit crossover | weight→oz, volume→fl oz, count→each need nothing else. Anything crossing kinds needs `each_weight` / `density` on the ingredient — blank → **stop and ask**, never guess |
+| 5 | Cost move | new `cost_per_base_unit` vs the ingredient's `last_cost`: more than **15%** either way → flag (a conversion slip shows up as a huge jump; a real price spike is worth knowing too) |
+| 6 | Vendor gap | the same ingredient from two vendors more than **2×** apart per base unit → flag as a likely conversion error |
+
+**After writing**
+
+| # | Check | Pass when |
+|---|---|---|
+| 7 | Read-back | every written row comes back with the values sent (list the invoice's lines, its vendor items, its ingredients — not just the first) |
+| 8 | Links | every line's `ingredient_id` = its vendor item's `ingredient_id`, and that ingredient's `invoice_items` contains the line. No ingredient left with no line |
+| 9 | Close | Σ (base_qty × cost_per_base_unit) over mapped lines = Σ their total_cost within $0.50 (4-decimal rounding); the remainder is exactly the unmapped lines (supplies) |
+
+In the report, also total **Σ split_premium** for the invoice — what splits
+cost over buying the case — and name each split line with its premium.
+
+**Report it as a table, every time** — ✓ or ⚠ per check with the numbers, e.g.
+`✓ 1 Totals $1,252.07 = $1,252.07 · 19/19 lines` …
+`⚠ 4 Blackberries: each weight blank — per-piece cost only`. A ⚠ is never
+silent: say what it blocks and what would clear it.
+
+**Human gates — park and notify.** Four decisions are never made alone: a
+**new vendor item** (its ingredient and conversion), a **new ingredient**, a
+**missing `each_weight`** (or `density`) a conversion needs, and a **line that
+will not reconcile** (check 1 fails and the cause isn't found). The default
+is to **park** the decision, not to wait for it: write it as a Task Board row
+(ray id at `rays.task_board` in the ids file) and stop that line —
+
+- title: what is needed, in the operator's words — `Confirm new vendor item: Parmesan, Shaved — US Foods 7929170 (4/5 LB → 320 oz)`, `Each weight needed: Blackberries (½-pt clamshell)`, `Line 7 won't reconcile: US Foods #949308`
+- `human_needed` true · `status` "Not started" · `priority` "high"
+- `notes`: the invoice (vendor, number, entry id), the line (code, description, pack, price), what you propose and why, **what it blocks** (the line stays unmapped / the ingredient keeps its old cost / the invoice is not written) and **what clears it** (tick `verified`, fill `each_weight` + `each_weight_source`, confirm the conversion, fix the line)
+
+Everything the gate does not block still lands: the header, every reconciled
+line, every mapping that needed no decision. The report names each parked row
+by title. When the operator clears a row, the next intake of that vendor (or a
+re-run of this one — step 2b will refuse the header but the mapping can be
+finished by hand) picks the decision up. **Fallback when a person is present**
+(an interactive session, someone answering): show the proposal as a table and
+ask, as before — the answer is written straight away and no row is parked.
+`verified` is the operator's tick; until it's ticked, every cost resting on
+that vendor item is called provisional in the report.
+
+**The write checker.** `workers/skills/invoice-intake/hooks/check-write.cjs`
+re-does the per-row arithmetic (checks 1, 2, 7 and the field rules above) on
+every `create_entry` / `update_entry` that hits these three rays — and the
+recipe-costing rays (Recipe Components, Recipes, Recipe Cost History) — and returns
+a blocking reason when something is off. When it's wired as a PostToolUse
+hook its feedback arrives on its own; when it isn't, run the same checks by
+hand — the rules are identical. `node <that file> --self-test` proves the
+checker itself.
+
+## Running headless
+
+The normal way an invoice gets in with nobody at a keyboard: the field's
+**"Run a skill"** Automations entry (id at `workflows.run_a_skill` in the ids file)
+takes a webhook body `{ "skill": "invoice-intake", "payload": { "file_url":
+"<the invoice PDF's URL>" } }` and dispatches `.github/workflows/agent-job.yml`,
+which runs this skill with `claude -p` on an API key against the field MCP,
+pre-downloads the file and extracts its text in layout mode, and fires the
+re-cost webhook (12b) when the skill ends with status `written`. The same job
+runs from the Actions tab (Run workflow → skill + payload). In that run every
+gate is park-and-notify, a duplicate is refused (2b), every write carries
+`return_row: true` with the write checker wired as a hook, and the skill ends
+by writing `job/report.md` and `job/outcome.json` (the job's prompt says the
+shape). Secrets live in the repo's Actions secrets only.
+
+## Vendor references
+
+- `workers/skills/invoice-intake/references/us-foods.md` — US Foods online order confirmations (usfoods.com email).
+
+Add one file per vendor the first time it appears: line grammar, where the
+header numbers sit, pricing columns, storage words, pack notation, and any trap
+you hit.

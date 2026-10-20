@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.local
+.DS_Store
+.next/
+
+# memory loop: per-entry journal mirrors are never kept — knowledge.md is the journal
+.lyte/memory/*/knowledge/
+# memory loop: the recall hook's injection log, regenerated locally
+.lyte/memory/recall-log.jsonl
+
+# the agent and re-cost jobs' scratch folder (uploaded as a run artifact, never committed)
+job/

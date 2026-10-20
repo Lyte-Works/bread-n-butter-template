@@ -1,0 +1,156 @@
+# Re-cost recipes — the recipe-costing skill as a job, no person in the loop.
+#
+# Reads Ingredients, Recipes, Recipe Components and Recipe Cost History through
+# the field's entries API (GET /api/fields/{slug}/rays/{id}/entries) with the
+# scoped field token in the FIELD_SERVICE_TOKEN repo secret, runs the
+# calculator (workers/skills/recipe-costing/recost.cjs) on that snapshot,
+# applies the plan in its order (component updates → recipe updates → history
+# rows, every write with return_row and re-checked), then re-reads, re-runs,
+# and FAILS unless the second plan has zero writes. Run it twice on an
+# unchanged field and the second run writes nothing and passes.
+#
+# Fired by the field's Automations workspace: the "Re-cost recipes" Workflows
+# entry dispatches this file hourly, and "Re-cost recipes — webhook" dispatches
+# it on demand (invoice intake fires that webhook after ingredient costs land).
+# Both arrive as repository_dispatch; the Actions tab's Run workflow button is
+# the hand path. The job never touches Invoice Items, Vendor Items or
+# Ingredients, and never prints the token: the runner's log holds counts,
+# titles and status codes only.
+#
+# Secret this job reads: FIELD_SERVICE_TOKEN — a scoped field token minted on
+# the field's Access page (entries read + write on the Food Costs rays). It is
+# the operator's to create in Settings → Secrets and variables → Actions.
+#
+# Which restaurant: the FIELD_SLUG and FIELD_APP_URL repo variables when set,
+# else `slug` and `app_url` in .lyte/field.json (the hand-off writes both).
+# Nothing here names a restaurant — a repo born from the template and not yet
+# handed off stops at "Resolve the restaurant" with the reason, and the table
+# ids in workers/skills/_shared/food-costs-ids.json must be filled too.
+
+name: Re-cost recipes
+
+on:
+  workflow_dispatch:
+    inputs:
+      trigger:
+        description: Why this re-cost runs (sets the history rows' trigger)
+        type: choice
+        default: recipe_change
+        options: [recipe_change, invoice, cost_correction, baseline]
+      invoice_id:
+        description: The Invoices entry that caused it (trigger invoice only)
+        type: string
+        default: ''
+      costed_on:
+        description: 'YYYY-MM-DD the costs are as of (default: today)'
+        type: string
+        default: ''
+      cost_source:
+        description: 'Replaces the vendor/date in component cost_math, e.g. "US Foods 2023-07-03"'
+        type: string
+        default: ''
+  repository_dispatch: {}   # any event type — the Automations dispatcher names its own
+
+permissions:
+  contents: read
+
+# One re-cost at a time: two overlapping applies could race on the same rows.
+concurrency:
+  group: recost
+  cancel-in-progress: false
+
+jobs:
+  recost:
+    name: re-cost every recipe through the entries API
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }   # Node builtins only — no npm install
+
+      - name: Calculator and job self-tests
+        run: |
+          node workers/skills/recipe-costing/recost.cjs --self-test
+          node workers/skills/recipe-costing/recost-job.cjs --self-test
+          node workers/skills/_shared/food-costs-ids.test.cjs
+
+      - name: Resolve the restaurant (repo variables, else .lyte/field.json)
+        id: field
+        env:
+          VAR_SLUG: ${{ vars.FIELD_SLUG }}
+          VAR_APP_URL: ${{ vars.FIELD_APP_URL }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            let j = {}; try { j = JSON.parse(fs.readFileSync(".lyte/field.json", "utf8")) || {}; } catch (e) {}
+            const slug = String(process.env.VAR_SLUG || j.slug || "").trim();
+            const app = String(process.env.VAR_APP_URL || j.app_url || "").trim().replace(/\/$/, "");
+            if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) { console.error("::error::No restaurant slug — set the FIELD_SLUG repo variable or `slug` in .lyte/field.json (the hand-off writes it). Nothing was read or written."); process.exit(1); }
+            if (!/^https:\/\//.test(app)) { console.error("::error::No app URL — set the FIELD_APP_URL repo variable or `app_url` in .lyte/field.json."); process.exit(1); }
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `slug=${slug}\napp_url=${app}\n`);
+            console.log("restaurant:", slug, "at", app);
+          '
+          node workers/skills/_shared/food-costs-ids.cjs --check rays.recipes rays.recipe_components rays.recipe_cost_history rays.ingredients
+
+      - name: Resolve the run's parameters
+        id: params
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
+          CLIENT_PAYLOAD_JSON: ${{ toJSON(github.event.client_payload) }}
+        run: |
+          # workflow_dispatch → the form inputs; repository_dispatch → the
+          # dispatcher's client_payload (the webhook body rides under
+          # `payload` when the Automations step forwards it; a flat body is
+          # read too). Anything unset falls back to the job's defaults.
+          node -e '
+            const ev = process.env.EVENT_NAME;
+            const inputs = JSON.parse(process.env.INPUTS_JSON || "null") || {};
+            const cp = JSON.parse(process.env.CLIENT_PAYLOAD_JSON || "null") || {};
+            const src = ev === "workflow_dispatch" ? inputs : Object.assign({}, cp, cp.payload && typeof cp.payload === "object" ? cp.payload : {});
+            const pick = (k) => { const v = src[k]; return typeof v === "string" ? v.trim() : (v == null ? "" : String(v)); };
+            const trig = ["recipe_change", "invoice", "cost_correction", "baseline"].includes(pick("trigger")) ? pick("trigger") : "recipe_change";
+            const out = { trigger: trig, invoice_id: pick("invoice_id"), costed_on: pick("costed_on"), cost_source: pick("cost_source") };
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(out.costed_on)) out.costed_on = "";
+            if (!/^[0-9a-f-]{36}$/.test(out.invoice_id)) out.invoice_id = "";
+            const fs = require("fs");
+            for (const [k, v] of Object.entries(out)) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${k}=${v}\n`);
+            console.log("event:", ev, "→", JSON.stringify(out));
+          '
+
+      - name: Re-cost (read → plan → apply → re-read → must plan zero writes)
+        env:
+          FIELD_SERVICE_TOKEN: ${{ secrets.FIELD_SERVICE_TOKEN }}
+          FIELD_SLUG: ${{ steps.field.outputs.slug }}
+          APP_URL: ${{ steps.field.outputs.app_url }}
+          TRIGGER: ${{ steps.params.outputs.trigger }}
+          INVOICE_ID: ${{ steps.params.outputs.invoice_id }}
+          COSTED_ON: ${{ steps.params.outputs.costed_on }}
+          COST_SOURCE: ${{ steps.params.outputs.cost_source }}
+        run: |
+          set -uo pipefail
+          if [ -z "${FIELD_SERVICE_TOKEN}" ]; then
+            echo "::error::The FIELD_SERVICE_TOKEN repo secret is not set. Mint a scoped field token on the field's Access page (entries read + write on the Food Costs rays) and add it under Settings → Secrets and variables → Actions. Nothing was read or written."
+            exit 1
+          fi
+          mkdir -p job
+          args=(--trigger "$TRIGGER" --report job/recost-report.md)
+          [ -n "$INVOICE_ID" ]  && args+=(--invoice-id "$INVOICE_ID")
+          [ -n "$COSTED_ON" ]   && args+=(--costed-on "$COSTED_ON")
+          [ -n "$COST_SOURCE" ] && args+=(--cost-source "$COST_SOURCE")
+          node workers/skills/recipe-costing/recost-job.cjs "${args[@]}"
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f job/recost-report.md ]; then cat job/recost-report.md >> "$GITHUB_STEP_SUMMARY"; else echo "No report was written — the job failed before the first read." >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recost-report
+          path: job/
+          if-no-files-found: ignore
+          retention-days: 30
