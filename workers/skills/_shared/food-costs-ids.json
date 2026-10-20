@@ -1,0 +1,23 @@
+{
+  "_about": "EMPTY ON PURPOSE. This is the one place this restaurant's table ids live; the new-restaurant hand-off fills every \"\" below with the ids of the tables it installed. Until it does, every skill, the write checker and the re-cost job refuse to run and name this file (see food-costs-ids.cjs beside it). Never paste an id anywhere else; when a table is re-created, change it here only.",
+  "prism": "Food Costs",
+  "rays": {
+    "recipes": "",
+    "recipe_components": "",
+    "recipe_cost_history": "",
+    "ingredients": "",
+    "invoice_items": "",
+    "invoices": "",
+    "vendor_items": "",
+    "task_board": ""
+  },
+  "views": {
+    "recipes_menu_dishes": "",
+    "recipes_prep_recipes": ""
+  },
+  "workflows": {
+    "recost": "",
+    "recost_webhook": "",
+    "run_a_skill": ""
+  }
+}
