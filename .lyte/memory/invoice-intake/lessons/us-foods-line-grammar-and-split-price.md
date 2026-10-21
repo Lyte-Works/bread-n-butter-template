@@ -12,4 +12,4 @@ EA is what one inner pack costs if bought alone: (CS / pack count) x upcharge, a
 
 Read the description for the real "each", not the parenthesised pack: mozzarella "LOG IN BRINE 11.45 OZ (5 LB)" is 7 logs x 11.45 oz. Where the vendor's EA is the whole pack (EA = CS), no split applies even if the kitchen re-breaks it.
 
-Pricing triplet on Invoice Items: `case_price` (vendor CS), `split_price` (vendor EA), `unit_price` (what was paid per unit ordered). Premium fields (`case_rate`, `split_rate`, `split_premium_pct`, `split_premium`) are per BASE unit; leave rate/pct BLANK where split = case, since 0% would read as "splitting is free". The current rich Invoice Items shape is read live with `get_ray`, not from here.
+On `invoice_lines`, `unit` is `CS` or `EA` and `unit_price` is what was paid per that unit: the CS price on a full-case line, the EA price on a `0/1` split line. The base-unit price then follows from the vendor item's `base_units_per_case` (÷ `pack_count` for an EA line). The table's current columns are read live with `list_tables`, not from here.

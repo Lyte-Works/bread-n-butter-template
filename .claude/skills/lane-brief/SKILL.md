@@ -37,7 +37,7 @@ Report: <how it hands back — the lane report it files, what goes in the summar
 
 **Context.** Only what is NOT already in the role's memory: the specific row, PR, run or decision this lane is about, by link or address a fresh session can resolve. Restating the role's own conventions wastes the lane's attention on what it already knows; leaving out the link to the thing itself costs it a search.
 
-**Constraints.** The edges: files or systems it must not touch, whether it may merge its own PR (default: no), the budget it has, anything already decided that it must not reopen. A lane has nobody to ask, so say it outright: **every human gate is park-and-notify** — the pending decision goes on the Task Board as a row (`rays.task_board` in `workers/skills/_shared/food-costs-ids.json`; `human_needed` true, `notes` saying what it blocks and what clears it), that line stops, the rest of the work lands, and the report names each parked row (`workers/skills/README.md` §Convention 2).
+**Constraints.** The edges: files or systems it must not touch, whether it may merge its own PR (default: no), the budget it has, anything already decided that it must not reopen. A lane has nobody to ask, so say it outright: **every human gate is park-and-notify** — the pending decision goes into the restaurant's `decisions` table as a row (`status` open, `notes` saying what it blocks and what clears it), that line stops, the rest of the work lands, and the report names each parked row (`workers/skills/README.md` §Convention 2).
 
 **Report.** How the lane ends: which report it files, what the closing summary says, whether a human must review. A lane that knows how to finish, finishes.
 

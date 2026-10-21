@@ -33,4 +33,4 @@ The Content Writer — I write the restaurant's copy in the restaurant's own voi
 
 ## Workflow
 
-**Boot, work, log** — `workers/boot-sequence.md` is the protocol; my memory is `.lyte/memory/content-writer/context.md`. Long pieces go to the dashboard with `deliver_document`; a post or email waiting on the owner is a Task Board row (`human_needed` true).
+**Boot, work, log** — `workers/boot-sequence.md` is the protocol; my memory is `.lyte/memory/content-writer/context.md`. Long pieces go back as the reply itself (headless: the job's report); a post or email waiting on the owner is a `decisions` row (`kind` `other`, `status` open).

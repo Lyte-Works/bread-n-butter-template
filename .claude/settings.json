@@ -9,16 +9,11 @@
       "Grep",
       "WebSearch",
       "WebFetch",
-      "mcp__<slug>__list_prisms",
-      "mcp__<slug>__list_rays",
-      "mcp__<slug>__get_ray",
-      "mcp__<slug>__list_entries",
-      "mcp__<slug>__get_entry",
-      "mcp__<slug>__list_views",
-      "mcp__<slug>__get_interface",
-      "mcp__<slug>__list_connections",
-      "mcp__<slug>__list_lanes",
-      "mcp__<slug>__get_approval"
+      "mcp__restaurant__list_tables",
+      "mcp__restaurant__list_rows",
+      "mcp__restaurant__get_row",
+      "mcp__restaurant__recipe_cost",
+      "mcp__restaurant__list_connections"
     ]
   },
   "hooks": {
@@ -56,7 +51,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__.*__(create_entry|update_entry)",
+        "matcher": "mcp__.*__(create_row|update_row)",
         "hooks": [
           {
             "type": "command",

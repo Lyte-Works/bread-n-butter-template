@@ -9,5 +9,5 @@ node_modules/
 # memory loop: the recall hook's injection log, regenerated locally
 .lyte/memory/recall-log.jsonl
 
-# the agent and re-cost jobs' scratch folder (uploaded as a run artifact, never committed)
+# the agent job's scratch folder (uploaded as a run artifact, never committed)
 job/

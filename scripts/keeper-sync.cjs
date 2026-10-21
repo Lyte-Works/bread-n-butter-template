@@ -927,10 +927,10 @@ var CLAUDE_SETTINGS_CORE_PATH = canonCorePath('claude-settings-core.cjs');
 //
 // The ALLOW LIST is the second generated region, converged in the same
 // read/compare/write (applyAllows, after applyHooks so both edits land in one
-// write). It needs the field's SLUG, because a rule's server segment admits no
-// wildcard; the core owns the precedence and this reads the two files it names.
-// No slug is not a failure: the retired rules still go, and the seeding waits
-// for a run that knows the field.
+// write). The restaurant MCP's reads sit under the fixed `restaurant` server
+// and need no slug; the slug only lets the core recognise retired rules
+// written under the restaurant's own name. The core owns the precedence and
+// this reads the two files it names. No slug is not a failure.
 
 function readIfPresent(file) {
   try {
@@ -991,7 +991,7 @@ function describeAllows(cs) {
     ? 'updated (+' + cs.added + ' \u2212' + cs.removed + ')'
     : 'unchanged';
   if (cs.slug) return change + ' [slug ' + cs.slug + ' via ' + cs.slugSource + ']';
-  return change + ' \u2014 field-MCP reads skipped (no slug: neither .lyte/field.json nor a field-MCP URL in .lyte/mcp-manifest.md)';
+  return change + ' [no slug yet: .lyte/field.json is blank \u2014 restaurant-MCP reads seeded; rules under the restaurant\u2019s own slug not checked]';
 }
 
 // --- Step 3: the context TITLE ---

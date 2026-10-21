@@ -10,4 +10,4 @@
 
 ## Kitchen Decisions
 - Cost basis is what was actually paid, per base unit (oz, fl oz, each) — see the invoice-intake lessons
-- A dish over 30% food cost, or up 2+ points in one re-cost, is flagged
+- A dish over 30% food cost, or up 2+ points since the day before the latest delivery, is flagged (`cost_alerts`)

@@ -1,43 +1,39 @@
-# Run a skill — any AI step on this field, as a job on an API key.
+# Run a skill — any AI step on this restaurant, as a job on its own AI key.
 #
-# Dispatched with { skill, payload }: installs Claude Code, points it at this
-# restaurant's field MCP (<app_url>/api/fields/<slug>/mcp) with the scoped
-# field token as bearer, runs `claude -p` with the named skill's prompt
-# and the payload, then fires the "Re-cost recipes" webhook so the field's
-# recipe costs follow whatever the skill changed. invoice-intake with an
-# invoice file URL is the first skill it runs:
+# The Bread 'n' Butter app starts it with a GitHub `repository_dispatch`,
+# event `run-skill`, `client_payload: { skill, payload }` (the app's
+# src/lib/repo-dispatch.ts). It installs Claude Code, connects it to this
+# restaurant's MCP — the `restaurant` server in .mcp.json, with the scoped
+# `bnb_…` token as bearer — and runs `claude -p` with the named skill and the
+# payload. invoice-intake is the first skill it runs:
 #
-#   { "skill": "invoice-intake", "payload": { "file_url": "https://…/files/…/invoice.pdf" } }
+#   { "skill": "invoice-intake", "payload": { "file_url": "<signed link>",
+#     "file_path": "<slug>/invoices/…", "reading_id": "<invoice_readings.id>" } }
 #
-# Which restaurant: the FIELD_SLUG and FIELD_APP_URL repo variables when set,
-# else `slug` and `app_url` in .lyte/field.json (the hand-off writes both); the
-# table ids, the Task Board id and the re-cost webhook id come from
-# workers/skills/_shared/food-costs-ids.json. Nothing here names a restaurant:
-# a repo not yet handed off stops at "Resolve the restaurant" and says why, and
-# can never fire another restaurant's webhook.
+# reading_id is the hand-off row the app wrote when the owner dropped the
+# file; this job closes it through the MCP when the run ends (status read ·
+# duplicate · failed, invoice_id, summary, run_url, finished_at), even when
+# the run dies half way. A payload of `{ "invoice_id": … }` is a resume: the
+# owner answered a parked decision, and the skill applies every answered
+# `decisions` row of that invoice.
 #
-# The field's "Run a skill" Workflows entry (Automations workspace) dispatches
-# this file from its webhook; the Actions tab's Run workflow button is the
-# hand path. Headless means every human gate in the skill is park-and-notify:
-# the pending decision lands as a Task Board row and the line stops; a second
-# dispatch of the same invoice (same vendor + invoice number, lines already
-# written) is refused as a duplicate and writes nothing.
+# Which restaurant: the RESTAURANT_SLUG repo variable when set, else `slug` in
+# .lyte/field.json (the hand-off writes it); the app address is the
+# BNB_APP_URL repo variable, else `app_url` in .lyte/field.json. Nothing here
+# names a restaurant: a repo not handed off yet stops at "Resolve the
+# restaurant" and says why.
 #
-# Secrets this job reads (the operator's to create under Settings → Secrets
-# and variables → Actions):
-#   ANTHROPIC_API_KEY      the model
-#   FIELD_SERVICE_TOKEN    scoped field token from the field's Access page
-#                          (entries read + write on Food Costs rays + Task
-#                          Board; files read for the invoice PDF)
-#   RECOST_WEBHOOK_SECRET  optional — the `secret` in the "Re-cost recipes —
-#                          webhook" entry's trigger_config. Without it (or
-#                          without that entry's id in the ids file / the
-#                          RECOST_WEBHOOK_ID repo variable) the job dispatches
-#                          recost.yml directly with its own GITHUB_TOKEN, so
-#                          the re-cost still runs; with both, the Automations
-#                          Runs ray records the hand-off too.
-# None of them is printed: the token reaches Claude Code through .mcp.json's
-# ${FIELD_SERVICE_TOKEN} expansion, and the log holds statuses and titles.
+# Headless means every human gate in the skill is park-and-notify: the pending
+# decision lands as a `decisions` row the owner answers in the app, and that
+# line stops. The Actions tab's Run workflow button is the hand path.
+#
+# Secrets this job reads (Settings → Secrets and variables → Actions):
+#   ANTHROPIC_API_KEY      the restaurant's own AI key
+#   BNB_RESTAURANT_TOKEN   the restaurant's Read + write `bnb_…` token
+#                          (Bread 'n' Butter → Settings → Connect your AI)
+# Neither is printed: the token reaches Claude Code through .mcp.json's
+# ${BNB_RESTAURANT_TOKEN} expansion and the close-out's own header, and the
+# log holds statuses and titles only.
 
 name: Run a skill
 
@@ -50,15 +46,15 @@ on:
         required: true
         default: invoice-intake
       payload:
-        description: 'JSON payload for the skill, e.g. {"file_url":"https://…/invoice.pdf"}'
+        description: 'JSON payload for the skill, e.g. {"invoice_id":"…"} to finish an invoice whose decisions were answered'
         type: string
         required: true
         default: '{}'
-  repository_dispatch: {}   # any event type — the Automations dispatcher names its own
+  repository_dispatch:
+    types: [run-skill]
 
 permissions:
   contents: read
-  actions: write   # the GITHUB_TOKEN fallback that dispatches recost.yml when no webhook secret is set
 
 concurrency:
   group: agent-job
@@ -82,10 +78,8 @@ jobs:
           INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
           CLIENT_PAYLOAD_JSON: ${{ toJSON(github.event.client_payload) }}
         run: |
-          # workflow_dispatch → the form; repository_dispatch → client_payload,
-          # read flat ({ skill, payload }) or as the Automations step forwards
-          # the webhook body ({ payload: { skill, payload } }). The skill must
-          # be a folder under workers/skills/ — anything else stops here.
+          # workflow_dispatch → the form; repository_dispatch → client_payload { skill, payload }.
+          # The skill must be a folder under workers/skills/ — anything else stops here.
           node -e '
             const fs = require("fs");
             const ev = process.env.EVENT_NAME;
@@ -96,56 +90,83 @@ jobs:
               skill = String(inputs.skill || "").trim();
               try { payload = JSON.parse(inputs.payload || "{}"); } catch (e) { console.error("::error::payload input is not JSON"); process.exit(1); }
             } else {
-              const body = cp.skill ? cp : (cp.payload && cp.payload.skill ? cp.payload : (cp.body && cp.body.skill ? cp.body : cp));
-              skill = String(body.skill || "").trim();
-              payload = body.payload && typeof body.payload === "object" ? body.payload : body;
+              skill = String(cp.skill || "").trim();
+              payload = cp.payload;
             }
             if (!/^[a-z0-9-]+$/.test(skill) || !fs.existsSync(`workers/skills/${skill}/SKILL.md`)) {
               console.error(`::error::unknown skill "${skill}" — it must be a folder under workers/skills/ with a SKILL.md`); process.exit(1);
             }
             if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+            const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            const str = (v) => (typeof v === "string" ? v : "");
+            const fileUrl = /^https:\/\//.test(str(payload.file_url)) ? payload.file_url : "";
+            const readingId = uuid.test(str(payload.reading_id)) ? payload.reading_id : "";
+            // The stored file name: the payload path (the app prefixes an 8-hex upload id), else the link.
+            let fileName = (str(payload.file_path) || fileUrl.split("?")[0]).split("/").pop().replace(/^[0-9a-f]{8}-/, "");
+            fileName = fileName.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "input.bin";
+            // The signed link is a credential for one file: kept out of the outputs, the log,
+            // the prompt and the uploaded artifact — only the fetch step reads it.
             fs.mkdirSync("job", { recursive: true });
-            fs.writeFileSync("job/payload.json", JSON.stringify(payload, null, 2) + "\n");
-            const fileUrl = typeof payload.file_url === "string" && /^https:\/\//.test(payload.file_url) ? payload.file_url : "";
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `skill=${skill}\nfile_url=${fileUrl}\n`);
-            console.log("skill:", skill, "payload keys:", Object.keys(payload).join(", ") || "(none)");
+            if (fileUrl) fs.writeFileSync("job/file-url", fileUrl);
+            const { file_url, ...shown } = payload;
+            fs.writeFileSync("job/payload.json", JSON.stringify(shown, null, 2) + "\n");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `skill=${skill}\nreading_id=${readingId}\nfile_name=${fileName}\nhas_file=${fileUrl ? "true" : ""}\n`);
+            console.log("skill:", skill, "· payload keys:", Object.keys(payload).join(", ") || "(none)", "· hand-off row:", readingId || "none");
           '
 
-      - name: Resolve the restaurant (repo variables, else .lyte/field.json; ids from the ids file)
-        id: field
+      - name: Resolve the restaurant (repo variables, else .lyte/field.json)
+        id: restaurant
         env:
-          VAR_SLUG: ${{ vars.FIELD_SLUG }}
-          VAR_APP_URL: ${{ vars.FIELD_APP_URL }}
-          VAR_WEBHOOK_ID: ${{ vars.RECOST_WEBHOOK_ID }}
+          VAR_SLUG: ${{ vars.RESTAURANT_SLUG }}
+          VAR_APP_URL: ${{ vars.BNB_APP_URL }}
         run: |
-          # Every table the skills write, and the Task Board the gates park on. A blank id stops the run here, named.
-          node workers/skills/_shared/food-costs-ids.cjs --check rays.recipes rays.recipe_components rays.recipe_cost_history \
-            rays.ingredients rays.invoice_items rays.invoices rays.vendor_items rays.task_board
           node -e '
             const fs = require("fs");
             let j = {}; try { j = JSON.parse(fs.readFileSync(".lyte/field.json", "utf8")) || {}; } catch (e) {}
-            const ids = JSON.parse(fs.readFileSync("workers/skills/_shared/food-costs-ids.json", "utf8"));
             const slug = String(process.env.VAR_SLUG || j.slug || "").trim();
-            const app = String(process.env.VAR_APP_URL || j.app_url || "").trim().replace(/\/$/, "");
-            const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-            const hook = String(process.env.VAR_WEBHOOK_ID || (ids.workflows && ids.workflows.recost_webhook) || "").trim();
-            if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) { console.error("::error::No restaurant slug — set the FIELD_SLUG repo variable or `slug` in .lyte/field.json (the hand-off writes it). Nothing was run."); process.exit(1); }
-            if (!/^https:\/\//.test(app)) { console.error("::error::No app URL — set the FIELD_APP_URL repo variable or `app_url` in .lyte/field.json."); process.exit(1); }
-            const out = { slug, app_url: app, mcp_url: `${app}/api/fields/${slug}/mcp`, task_board: ids.rays.task_board,
-              webhook_url: uuid.test(hook) ? `${app}/api/automations/webhooks/${hook}` : "" };
+            const app = String(process.env.VAR_APP_URL || j.app_url || "https://bread-n-butter.lyte.works").trim().replace(/\/$/, "");
+            if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) { console.error("::error::No restaurant slug — set the RESTAURANT_SLUG repo variable or `slug` in .lyte/field.json (the hand-off writes it). Nothing was run."); process.exit(1); }
+            if (!/^https:\/\//.test(app)) { console.error("::error::The app address is not https — fix the BNB_APP_URL repo variable or `app_url` in .lyte/field.json."); process.exit(1); }
+            const out = { slug, app_url: app, mcp_url: `${app}/api/restaurants/${slug}/mcp` };
             for (const [k, v] of Object.entries(out)) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${k}=${v}\n`);
-            console.log("restaurant:", slug, "at", app, "· re-cost webhook:", out.webhook_url ? "set" : "none (direct dispatch)");
+            console.log("restaurant:", slug, "· MCP:", out.mcp_url);
           '
 
       - name: Check the secrets exist
         env:
           HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
-          HAS_TOKEN: ${{ secrets.FIELD_SERVICE_TOKEN != '' }}
+          HAS_TOKEN: ${{ secrets.BNB_RESTAURANT_TOKEN != '' }}
         run: |
           ok=1
           [ "$HAS_KEY" = "true" ]   || { echo "::error::The ANTHROPIC_API_KEY repo secret is not set — the skill cannot run without a model. Add it under Settings → Secrets and variables → Actions."; ok=0; }
-          [ "$HAS_TOKEN" = "true" ] || { echo "::error::The FIELD_SERVICE_TOKEN repo secret is not set — mint a scoped field token on the field's Access page and add it under Settings → Secrets and variables → Actions."; ok=0; }
+          [ "$HAS_TOKEN" = "true" ] || { echo "::error::The BNB_RESTAURANT_TOKEN repo secret is not set — mint a Read + write token in Bread 'n' Butter (Settings → Connect your AI) and add it under Settings → Secrets and variables → Actions."; ok=0; }
           [ "$ok" = 1 ]
+
+      - name: Open the door (the restaurant MCP answers this token)
+        env:
+          MCP_URL: ${{ steps.restaurant.outputs.mcp_url }}
+          BNB_RESTAURANT_TOKEN: ${{ secrets.BNB_RESTAURANT_TOKEN }}
+        run: |
+          node -e '
+            (async () => {
+              const res = await fetch(process.env.MCP_URL, {
+                method: "POST",
+                headers: { "content-type": "application/json", accept: "application/json, text/event-stream",
+                  authorization: `Bearer ${process.env.BNB_RESTAURANT_TOKEN}` },
+                body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_tables", arguments: {} } }),
+                signal: AbortSignal.timeout(30000),
+              }).catch((e) => ({ ok: false, status: 0, text: async () => String(e && e.message) }));
+              const body = await res.text();
+              let reply = null; try { reply = JSON.parse(body); } catch (e) {}
+              const tables = reply && reply.result && reply.result.structuredContent && reply.result.structuredContent.tables;
+              if (!res.ok || !Array.isArray(tables)) {
+                const why = reply && reply.error ? reply.error.message : reply && reply.result && reply.result.isError ? reply.result.content[0].text : `HTTP ${res.status}`;
+                console.error(`::error::The restaurant MCP refused list_tables (${why}). A 401/403 is a missing, revoked or read-only BNB_RESTAURANT_TOKEN; a 404 is a wrong slug or app address.`);
+                process.exit(1);
+              }
+              console.log("restaurant MCP:", tables.length, "tables and views");
+            })();
+          '
 
       - name: Install Claude Code and a PDF text extractor
         run: |
@@ -155,40 +176,30 @@ jobs:
           pdftotext -v 2>&1 | head -1
 
       - name: Fetch the input file
-        if: steps.params.outputs.file_url != ''
+        id: input
+        if: steps.params.outputs.has_file == 'true'
         env:
-          FILE_URL: ${{ steps.params.outputs.file_url }}
-          FIELD_SERVICE_TOKEN: ${{ secrets.FIELD_SERVICE_TOKEN }}
+          FILE_NAME: ${{ steps.params.outputs.file_name }}
         run: |
           set -uo pipefail
           mkdir -p job/input
-          name="$(basename "${FILE_URL%%\?*}")"; name="${name:-input.bin}"
-          # Field files are served to the field's own token; a public URL works the same way.
-          code="$(curl -sS -L --max-time 120 -o "job/input/$name" -w '%{http_code}' -H "x-field-token: $FIELD_SERVICE_TOKEN" "$FILE_URL")"
-          if [ "$code" != "200" ]; then echo "::error::could not fetch the input file (HTTP $code)"; exit 1; fi
-          case "$name" in
-            *.pdf|*.PDF) pdftotext -layout "job/input/$name" "job/input/$name.txt" && echo "extracted $(wc -l < "job/input/$name.txt") lines of text" ;;
+          # A signed, short-lived link to the app's own storage: no header needed, never printed.
+          code="$(curl -sS -L --max-time 120 -o "job/input/$FILE_NAME" -w '%{http_code}' "$(cat job/file-url)")"
+          rm -f job/file-url
+          if [ "$code" != "200" ]; then echo "::error::could not fetch the input file (HTTP $code) — the link may have expired; drop the invoice again"; exit 1; fi
+          case "$FILE_NAME" in
+            *.pdf|*.PDF) pdftotext -layout "job/input/$FILE_NAME" "job/input/$FILE_NAME.txt" && echo "extracted $(wc -l < "job/input/$FILE_NAME.txt") lines of text" ;;
           esac
-          echo "name=$name" >> "$GITHUB_OUTPUT"
           ls -la job/input
 
-      - name: Write the MCP config and the write-checker hook
-        env:
-          SLUG: ${{ steps.field.outputs.slug }}
-          MCP_URL: ${{ steps.field.outputs.mcp_url }}
+      - name: Wire the write checker
         run: |
-          # The token never appears here: Claude Code expands ${FIELD_SERVICE_TOKEN} from its environment.
-          node -e '
-            const cfg = { mcpServers: { [process.env.SLUG]: { type: "http", url: process.env.MCP_URL,
-              headers: { Authorization: "Bearer ${FIELD_SERVICE_TOKEN}" } } } };
-            require("fs").writeFileSync("job/mcp.json", JSON.stringify(cfg, null, 2) + "\n");
-          '
-          # The skill's write checker re-does the arithmetic on every row the field MCP stores.
+          # The skill's write checker re-does the per-row arithmetic on every row the restaurant MCP stores.
           cat > job/settings.json <<'EOF'
           {
             "hooks": {
               "PostToolUse": [
-                { "matcher": "mcp__.*__(create_entry|update_entry)",
+                { "matcher": "mcp__restaurant__(create_row|update_row)",
                   "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/workers/skills/invoice-intake/hooks/check-write.cjs\"" } ] }
               ]
             }
@@ -198,25 +209,24 @@ jobs:
       - name: Compose the prompt
         env:
           SKILL: ${{ steps.params.outputs.skill }}
-          FILE_URL: ${{ steps.params.outputs.file_url }}
-          SLUG: ${{ steps.field.outputs.slug }}
-          TASK_BOARD: ${{ steps.field.outputs.task_board }}
+          FILE_NAME: ${{ steps.params.outputs.file_name }}
+          HAS_FILE: ${{ steps.input.outcome == 'success' }}
+          SLUG: ${{ steps.restaurant.outputs.slug }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -u
           payload="$(cat job/payload.json)"
           input_block=""
-          if [ -n "$FILE_URL" ]; then
-            f="$(ls job/input | grep -v '\.txt$' | head -1)"
+          if [ "$HAS_FILE" = "true" ]; then
             input_block="## Input file
-          The file from the payload is already downloaded: \`job/input/$f\` (from $FILE_URL)."
-            if [ -f "job/input/$f.txt" ]; then input_block="$input_block
-          Its text, extracted with layout kept (\`pdftotext -layout\`), is at \`job/input/$f.txt\` — read that first; a plain PDF read of a vendor email returns nothing."; fi
+          The file from the payload is already downloaded: \`job/input/$FILE_NAME\`. (Its signed link is withheld from this prompt; you do not need it.)"
+            if [ -f "job/input/$FILE_NAME.txt" ]; then input_block="$input_block
+          Its text, extracted with layout kept (\`pdftotext -layout\`), is at \`job/input/$FILE_NAME.txt\` — read that first; a plain PDF read of a vendor email returns nothing."; fi
           fi
           cat > job/prompt.md <<EOF
           /$SKILL
 
-          You are running HEADLESS, as GitHub Actions run $RUN_URL on this restaurant's field (\`$SLUG\`). No person is present in this session. Work the /$SKILL skill end to end on the payload below, exactly as its SKILL.md says for a headless run.
+          You are running HEADLESS, as GitHub Actions run $RUN_URL for the restaurant \`$SLUG\`. No person is present in this session. Work the /$SKILL skill end to end on the payload below, exactly as its SKILL.md says for a headless run. The restaurant's data is reached ONLY through the \`restaurant\` MCP server (list_tables · list_rows · get_row · create_row · update_row · recipe_cost); there is no other way in.
 
           ## Payload
           \`\`\`json
@@ -226,28 +236,31 @@ jobs:
           $input_block
 
           ## Rules for this run
-          - **Nobody can answer you.** Every human gate the skill names is park-and-notify: write the pending decision as a Task Board row (ray $TASK_BOARD, \`rays.task_board\` in workers/skills/_shared/food-costs-ids.json — title says what is needed, \`human_needed\` true, \`status\` "Not started", \`priority\` "high", \`notes\` say exactly what is missing, what it blocks and what would clear it) and stop that line. Never guess a conversion, an each_weight, a category or a new ingredient.
-          - **Refuse duplicates.** Before the first write, list the Invoices ray for an entry with the same vendor and invoice number that already has Invoice Items. Found → write nothing, say so, finish with status "duplicate". A bare header the operator created (the uploaded file, no lines yet) is the normal starting point, not a duplicate — update it.
-          - **Every write passes \`return_row: true\`.** A hook re-checks each stored row; fix anything it blocks before moving on.
-          - **Do not run the recipe-costing skill yourself.** This job fires the field's "Re-cost recipes" webhook the moment you finish (skill step 12b, job path); the history rows it writes are read by the operator on the Recipe Cost History ray.
+          - **Nobody can answer you.** Every human gate the skill names is park-and-notify: write the pending decision as a \`decisions\` row (\`create_row\`: \`kind\`, the \`invoice_id\` / \`invoice_line_id\` / \`recipe_id\` it belongs to, \`title\` saying what is needed in the owner's words, \`notes\` saying what you propose, what it blocks and what clears it, \`status\` "open") and stop that line. Never guess a conversion, an each weight, a category or a new ingredient.
+          - **A payload with \`invoice_id\` is a resume:** the invoice is already in. Read no file, create no invoice or line; apply each \`decisions\` row of it with \`status\` "answered" as the skill says, and mark each one "done".
+          - **Refuse duplicates on a first reading** (skill step 2b): an invoice from the same vendor with the same invoice number that already has lines → write nothing, finish with status "duplicate".
+          - **Never write \`invoice_readings\`.** This job closes the hand-off itself from your outcome.
+          - **A hook re-checks each stored row** after every create_row / update_row; fix anything it blocks before moving on.
           - **Write two files before you finish**, in this checkout:
-            - \`job/report.md\` — the skill's full report (its Verification table first, then everything the skill's Report step asks for, then the Task Board rows you parked, by title).
-            - \`job/outcome.json\` — one JSON object: \`{"status":"written"|"duplicate"|"failed","invoice_id":"<Invoices entry id or null>","vendor":"…","invoice_no":"…","delivery_date":"YYYY-MM-DD","cost_source":"<Vendor> <delivery date>","ingredient_costs_changed":<n>,"parked":["<Task Board row title>",…],"summary":"<one line for a person>"}\`. Use "failed" only when the skill could not finish (a reconciliation that will not close, an unreadable file) — and say why in summary.
+            - \`job/report.md\` — the skill's full report (its Verification table first, then everything the skill's Report step asks for, then the decisions you parked, by title). Plain kitchen words: recipe, ingredient, invoice, vendor item, dish.
+            - \`job/outcome.json\` — one JSON object: \`{"status":"read"|"duplicate"|"done"|"failed","invoice_id":"<invoices.id or null>","parked":["<decision title>",…],"summary":"<one line for the owner>"}\`. "read" is an invoice read and written (a resume that finished its answers is "read" too); "done" is any other skill finished; "failed" only when the skill could not finish (a total that will not close, an unreadable file) — say why in summary.
           - End your final message with that same one-line summary.
           EOF
           echo "prompt: $(wc -c < job/prompt.md) bytes"
 
-      - name: Run the skill (claude -p on the field MCP)
+      - name: Run the skill (claude -p on the restaurant MCP)
         id: run
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          FIELD_SERVICE_TOKEN: ${{ secrets.FIELD_SERVICE_TOKEN }}
-          # The repo's own lane-report hook stays inert here: no FIELD_SLUG is set, so nothing reports a lane.
+          BNB_RESTAURANT_TOKEN: ${{ secrets.BNB_RESTAURANT_TOKEN }}
+          RESTAURANT_SLUG: ${{ steps.restaurant.outputs.slug }}
+          BNB_APP_URL: ${{ steps.restaurant.outputs.app_url }}
+          # The repo's own lane-report hook stays inert in this job.
           LANE_REPORT: 'off'
         run: |
           set -uo pipefail
           claude -p "$(cat job/prompt.md)" \
-            --mcp-config job/mcp.json --strict-mcp-config \
+            --mcp-config .mcp.json --strict-mcp-config \
             --settings job/settings.json \
             --dangerously-skip-permissions \
             --max-turns 250 \
@@ -260,45 +273,52 @@ jobs:
             if (result) fs.writeFileSync("job/result.md", result + "\n");
             if (out) { const { num_turns, duration_ms, total_cost_usd, is_error } = out; console.log("turns:", num_turns, "duration_ms:", duration_ms, "cost_usd:", total_cost_usd, "is_error:", is_error); }
             let outcome = {};
-            try { outcome = JSON.parse(fs.readFileSync("job/outcome.json", "utf8")); } catch (e) { outcome = { status: "unknown", summary: "the skill did not write job/outcome.json" }; }
-            const status = ["written", "duplicate", "failed"].includes(outcome.status) ? outcome.status : "unknown";
+            try { outcome = JSON.parse(fs.readFileSync("job/outcome.json", "utf8")); } catch (e) { outcome = { status: "failed", summary: "The reading stopped before it finished." }; }
+            const status = ["read", "duplicate", "done", "failed"].includes(outcome.status) ? outcome.status : "failed";
             const o = process.env.GITHUB_OUTPUT;
             fs.appendFileSync(o, `status=${status}\n`);
-            fs.appendFileSync(o, `invoice_id=${/^[0-9a-f-]{36}$/.test(String(outcome.invoice_id || "")) ? outcome.invoice_id : ""}\n`);
-            fs.appendFileSync(o, `delivery_date=${/^\d{4}-\d{2}-\d{2}$/.test(String(outcome.delivery_date || "")) ? outcome.delivery_date : ""}\n`);
-            fs.appendFileSync(o, `cost_source=${String(outcome.cost_source || "").replace(/[\r\n]/g, " ").slice(0, 120)}\n`);
+            fs.appendFileSync(o, `invoice_id=${/^[0-9a-f-]{36}$/i.test(String(outcome.invoice_id || "")) ? outcome.invoice_id : ""}\n`);
             fs.appendFileSync(o, `summary=${String(outcome.summary || "").replace(/[\r\n]/g, " ").slice(0, 500)}\n`);
             console.log("outcome:", status, "—", outcome.summary || "");
           '
 
-      - name: Fire the re-cost
-        if: steps.run.outputs.status == 'written'
+      - name: Close the hand-off (invoice_readings, through the restaurant MCP)
+        if: always() && steps.params.outputs.reading_id != '' && steps.restaurant.outputs.mcp_url != ''
         env:
-          RECOST_WEBHOOK_SECRET: ${{ secrets.RECOST_WEBHOOK_SECRET }}
-          GH_TOKEN: ${{ github.token }}
-          WEBHOOK_URL: ${{ steps.field.outputs.webhook_url }}
+          MCP_URL: ${{ steps.restaurant.outputs.mcp_url }}
+          BNB_RESTAURANT_TOKEN: ${{ secrets.BNB_RESTAURANT_TOKEN }}
+          READING_ID: ${{ steps.params.outputs.reading_id }}
+          STATUS: ${{ steps.run.outputs.status }}
           INVOICE_ID: ${{ steps.run.outputs.invoice_id }}
-          COSTED_ON: ${{ steps.run.outputs.delivery_date }}
-          COST_SOURCE: ${{ steps.run.outputs.cost_source }}
+          SUMMARY: ${{ steps.run.outputs.summary }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          set -uo pipefail
-          body="$(node -e 'console.log(JSON.stringify({ trigger: "invoice", invoice_id: process.env.INVOICE_ID || null, costed_on: process.env.COSTED_ON || null, cost_source: process.env.COST_SOURCE || null, source: "agent-job", run_url: process.env.RUN_URL }))')"
-          if [ -n "${RECOST_WEBHOOK_SECRET:-}" ] && [ -n "$WEBHOOK_URL" ]; then
-            # The field's "Re-cost recipes — webhook" entry: its run dispatches recost.yml and the Runs ray records the hand-off.
-            code="$(curl -sS --max-time 30 -o job/recost-webhook.json -w '%{http_code}' -X POST "$WEBHOOK_URL" \
-              -H 'content-type: application/json' -H "x-webhook-secret: $RECOST_WEBHOOK_SECRET" -H "x-webhook-event: agent-job-${GITHUB_RUN_ID}" -d "$body")"
-            echo "re-cost webhook → HTTP $code"; cat job/recost-webhook.json 2>/dev/null || true; echo
-            if [ "$code" = "200" ] || [ "$code" = "201" ] || [ "$code" = "202" ]; then exit 0; fi
-            echo "::warning::the webhook did not accept the fire (HTTP $code; a 404 is a wrong secret) — dispatching recost.yml directly instead"
-          else
-            echo "No re-cost webhook (RECOST_WEBHOOK_SECRET or the webhook id is not set) — dispatching recost.yml directly with the run's GITHUB_TOKEN (the Runs ray will not show this hand-off)"
-          fi
-          args=(-f trigger=invoice)
-          [ -n "$INVOICE_ID" ]  && args+=(-f "invoice_id=$INVOICE_ID")
-          [ -n "$COSTED_ON" ]   && args+=(-f "costed_on=$COSTED_ON")
-          [ -n "$COST_SOURCE" ] && args+=(-f "cost_source=$COST_SOURCE")
-          gh workflow run recost.yml --ref "${GITHUB_REF_NAME}" "${args[@]}"
+          # Runs whatever happened above, so the Invoices screen never waits on a run that died:
+          # a run with no outcome closes the row as failed.
+          node -e '
+            (async () => {
+              const e = process.env;
+              const status = e.STATUS === "done" ? "read" : ["read", "duplicate", "failed"].includes(e.STATUS) ? e.STATUS : "failed";
+              const values = { status, summary: e.SUMMARY || (status === "failed" ? "The reading stopped before it finished." : null),
+                run_url: e.RUN_URL, finished_at: new Date().toISOString() };
+              if (e.INVOICE_ID) values.invoice_id = e.INVOICE_ID;
+              const res = await fetch(e.MCP_URL, {
+                method: "POST",
+                headers: { "content-type": "application/json", accept: "application/json, text/event-stream",
+                  authorization: `Bearer ${e.BNB_RESTAURANT_TOKEN}` },
+                body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call",
+                  params: { name: "update_row", arguments: { table: "invoice_readings", id: e.READING_ID, values } } }),
+                signal: AbortSignal.timeout(30000),
+              }).catch((err) => ({ ok: false, status: 0, text: async () => "" }));
+              let reply = null; try { reply = JSON.parse(await res.text()); } catch (err) {}
+              if (!res.ok || !reply || reply.error || !reply.result || reply.result.isError) {
+                const why = reply && reply.error ? reply.error.message : reply && reply.result && reply.result.isError ? reply.result.content[0].text : `HTTP ${res.status}`;
+                console.error(`::error::could not close the hand-off row (${why})`);
+                process.exit(1);
+              }
+              console.log("hand-off closed:", status, values.invoice_id ? `· invoice ${values.invoice_id}` : "");
+            })();
+          '
 
       - name: Summary
         if: always()
@@ -313,9 +333,9 @@ jobs:
             [ -n "$SUMMARY" ] && echo "> $SUMMARY" && echo ""
             if [ -f job/report.md ]; then cat job/report.md; elif [ -f job/result.md ]; then cat job/result.md; else echo "_No report was written._"; fi
           } >> "$GITHUB_STEP_SUMMARY"
-          rm -f job/mcp.json
+          rm -f job/file-url
           case "$STATUS" in
-            written|duplicate) exit 0 ;;
+            read|duplicate|done) exit 0 ;;
             *) echo "::error::the skill ended with status '${STATUS:-not run}'"; exit 1 ;;
           esac
 
@@ -325,6 +345,6 @@ jobs:
           name: agent-job-${{ steps.params.outputs.skill || 'unknown' }}
           path: |
             job/
-            !job/mcp.json
+            !job/file-url
           if-no-files-found: ignore
           retention-days: 30

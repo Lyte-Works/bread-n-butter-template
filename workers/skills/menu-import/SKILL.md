@@ -1,50 +1,41 @@
 ---
 name: menu-import
-description: Read a restaurant's menu (a website URL, a PDF, a photo of the printed menu, or a POS menu export) and create one Recipes row per dish — name, category, menu price as printed, marked as a menu dish yielding 1 portion — with every dish on the menu counted and nothing invented, then hand off to recipe-entry. Use whenever someone shares a menu and asks to import, load, add, enter, set up or start costing their dishes.
+description: Read a restaurant's menu (a website URL, a PDF, a photo of the printed menu, or a POS menu export) and create one recipe per dish in the restaurant's database, through its Bread 'n' Butter MCP — name, category, menu price as printed, marked as a menu dish yielding 1 portion — with every dish on the menu counted and nothing invented, then hand off to recipe-entry. Use whenever someone shares a menu and asks to import, load, add, enter, set up or start costing their dishes.
 kind: procedure
 ---
 
 # Menu Import
 
-<!-- Restaurant-repo skill. Ray ids come from
-workers/skills/_shared/food-costs-ids.json (key `rays.recipes`) — read it, never
-retype an id. The lyte keys below are exact; when a lyte is added or renamed on
-Recipes, update the Base Structure table here in the same change. The old
-Menu Items / POS Menus / Modifier Groups rays are a leftover: this skill writes
-Recipes, never Menu Items. -->
+<!-- Restaurant skill. It reaches the restaurant's data ONLY through the
+restaurant's own Bread 'n' Butter MCP (`.mcp.json`; verbs list_tables ·
+list_rows · get_row · create_row · update_row · recipe_cost). Column names are
+the restaurant database's (supabase/restaurant/ in the app repo); when a
+migration changes one, update the table here in the same change. There is no
+separate menu-items table: a menu dish is a recipe with `is_prep` false and a
+`menu_price`. -->
 
 A menu is the restaurant's promise of what it sells and for how much. The job
-is to turn that promise into the list of dishes the field will cost — every
+is to turn that promise into the list of dishes the database will cost — every
 dish on the page, at the price on the page, and not one dish more. A menu row
 here is an empty recipe: it carries the name and the price; what goes into it
 is recipe-entry's job.
 
-## Before the first call
-
-1. **Check the ids:** `node workers/skills/_shared/food-costs-ids.cjs --check`. Exit 1 → this restaurant is not handed off yet: write nothing, say which ids are missing, stop.
-2. **Know who can answer.** Headless (the "Run a skill" job, a lane, a schedule — nobody at the keyboard): every human gate below is **park-and-notify** — write the pending decision as a Task Board row (`rays.task_board`; `title` what is needed, `human_needed` true, `status` "Not started", `priority` "high", `notes` what it blocks and what clears it), stop that line, keep going with everything it does not block, and name each parked row in the report. A person present: ask instead, and park nothing. The full convention: `workers/skills/README.md` §Convention 2.
-
 ## Base Structure
 
-One ray, in the **Food Costs** prism. Write by lyte **key**, never by label.
+### `recipes` — one row per dish the guest can order
 
-### Recipes — id at `rays.recipes` in `workers/skills/_shared/food-costs-ids.json`
+| Column | Fill with |
+|---|---|
+| `name` | The dish name as printed, title-cased, menu jargon kept ("Falafel Plate", "The Hangover Burger"). Descriptions stay out of the name |
+| `category` | The menu's own section heading as printed, title-cased ("Mezze", "Mains", "Brunch Cocktails"). No section on the menu → empty, not a guess |
+| `menu_price` | The printed price, as a number (`14.00` for "$14" or "14"). Never rounded, never adjusted |
+| `is_prep` | `false` — always. A menu dish is never a prep recipe |
+| `yield_quantity` | `1` |
+| `yield_unit` | `portion` |
 
-One row per dish the guest can order.
-
-| Key | Label | Type | Fill with |
-|---|---|---|---|
-| `name` | Name | text | The dish name as printed, title-cased, menu jargon kept ("Falafel Plate", "The Hangover Burger"). Descriptions stay out of the name |
-| `category` | Category | text | The menu's own section heading as printed, title-cased ("Mezze", "Mains", "Brunch Cocktails"). No section on the menu → blank, not a guess |
-| `menu_price` | Menu Price | number | The printed price, as a number (`14.00` for "$14" or "14"). Never rounded, never adjusted |
-| `is_prep` | Prep Recipe | checkbox | `false` — always. A menu dish is never a prep recipe |
-| `yield_quantity` | Yield Qty | number | `1` |
-| `yield_unit` | Yield Unit | text | `portion` |
-
-Never written by this skill: `total_cost`, `cost_per_yield_unit`,
-`food_cost_pct` (recipe-costing writes them once the dish has components),
-`components` (recipe-entry links them), `location_id` (leave empty until the
-field has locations again). `created_by` is innate.
+Never written by this skill: `location_id` (leave empty). There is no cost
+column — a dish's cost is the view `recipe_costs`, and it reads *cost
+incomplete* until recipe-entry gives the dish its lines.
 
 ## Procedure
 
@@ -59,7 +50,7 @@ field has locations again). `created_by` is innate.
    chicken +$4"). Count the dishes on the source as you go — that count is the
    number every check below is held against.
 3. **Decide what is a dish** by the judgement rules below.
-4. **Read the Recipes ray live** (`list_entries`) and match each dish by name
+4. **Read `recipes` live** (`list_rows`, `is_prep` false) and match each dish by name
    (case- and punctuation-insensitive). Already there → it is not created
    again; a price that differs is listed for the person, never overwritten
    silently.
@@ -67,14 +58,12 @@ field has locations again). `created_by` is innate.
    section, name, price, and per row `new` · `exists` · `exists, price differs`,
    plus every judgement call (a size split, a market-price dish, an item left
    out and why). Write only after the person confirms it. **When no person is
-   present** (a lane, a scheduled run): do not write. Park the decision as a
-   **Task Board** row (`create_entry` on the Task Board ray, id at `rays.task_board`)
-   with `title` `Confirm menu import — <restaurant> (<n> dishes)`, `status`
-   `Not started`, `human_needed` `true`, `priority` `high`, and the full table
-   in `notes` — then stop and report that it is parked.
-6. **Write one dish, read it back** (`return_row: true`): every key landed as
-   sent, `is_prep` false, yield `1 portion`. Then write the rest, each with
-   `return_row: true`.
+   present** (a lane, the repo's agent job): do not write. Park the decision as
+   one `decisions` row (`create_row`) with `kind` `menu_import`, `status`
+   `open`, `title` `Confirm menu import — <restaurant> (<n> dishes)` and the
+   full table in `notes` — then stop and report that it is parked.
+6. **Write one dish**, check the stored row in the reply: every column landed
+   as sent, `is_prep` false, yield `1 portion`. Then write the rest.
 7. **Verify** — every check in Verification below, every import. Fix what
    fails, re-run, then report.
 8. **Hand off** to **recipe-entry**: the list of new dish ids and names, in
@@ -124,13 +113,13 @@ unasked.
 | 1 | Count | dishes parsed = dishes counted on the source (per section and in total), size/variant rows counted as the rows they become |
 | 2 | Nothing invented | every parsed row points at a line of the source (section + printed text) |
 | 3 | Prices as printed | every `menu_price` = the printed number exactly; every blank price has its reason (MP, range, not printed) |
-| 4 | No duplicates | no dish both `new` and matching an existing Recipes row; no two new rows with the same name |
+| 4 | No duplicates | no dish both `new` and matching an existing `recipes` row; no two new rows with the same name |
 
 **After writing**
 
 | # | Check | Pass when |
 |---|---|---|
-| 5 | Read-back | listing Recipes returns every written row with the values sent — `name`, `category`, `menu_price`, `is_prep false`, `yield_quantity 1`, `yield_unit portion` |
+| 5 | Read-back | listing `recipes` returns every written row with the values sent — `name`, `category`, `menu_price`, `is_prep false`, `yield_quantity 1`, `yield_unit portion` |
 | 6 | Close | rows created + rows already present = dishes on the menu; nothing created that wasn't on the confirmed table |
 
 Report it as a table, every time — ✓ or ⚠ per check with the numbers, e.g.
@@ -141,10 +130,10 @@ say what it blocks and what would clear it.
 ## Report
 
 The Verification table first, then: dishes created, dishes already present
-(with any price that differs from the field's row), judgement calls (size
+(with any price that differs from the database's row), judgement calls (size
 splits, market price, items left out and why), the source and how it was read
 (page, PDF, photo, export), and the hand-off line:
 
 ```
-→ recipe-entry: 32 new dishes, no components yet — Falafel Plate, Chicken Shawarma (Chicken), …
+→ recipe-entry: 32 new dishes, no lines yet — Falafel Plate, Chicken Shawarma (Chicken), …
 ```

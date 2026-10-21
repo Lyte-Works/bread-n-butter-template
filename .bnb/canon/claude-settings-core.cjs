@@ -1,7 +1,7 @@
 'use strict';
 // IS: Bread 'n' Butter's `.claude/settings.json` core — ONE definition of the
 //     two GENERATED regions of a restaurant repo's settings file (the hook
-//     wiring, and the field-MCP read tools in `permissions.allow`), and the
+//     wiring, and the restaurant-MCP read tools in `permissions.allow`), and the
 //     pure splices that install them. scripts/keeper-sync.cjs (step 3e)
 //     applies both on every run, so a restaurant repo tracks this file instead
 //     of freezing at what it was born with. The settings-file twin of
@@ -20,8 +20,8 @@
 
 // Each command points at a hook in `.claude/hooks/`, except the write checker,
 // which lives with the skill it serves (workers/skills/invoice-intake/hooks/)
-// and is always wired: it re-does the arithmetic on every food-costs row the
-// field MCP stores, and refuses loudly while the ids file is blank.
+// and is always wired: it re-does the per-row arithmetic on every row the
+// restaurant MCP stores (`create_row` / `update_row`).
 // `CLAUDE_PROJECT_DIR` is Claude Code's repo-root variable; the `:-.}` fallback
 // keeps the command valid if it is ever unset. A `.claude/hooks/` script the
 // repo does not carry is not wired (applyHooks' `present` filter): wiring a
@@ -64,7 +64,7 @@ var CANON_HOOKS = {
   ],
   PostToolUse: [
     {
-      matcher: 'mcp__.*__(create_entry|update_entry)',
+      matcher: 'mcp__.*__(create_row|update_row)',
       hooks: [
         {
           type: 'command',
@@ -438,24 +438,56 @@ function applyEnv(settingsJsonText) {
 // keep the old one forever.
 //
 // Three acts, and only three (applyAllows):
-//   (a) DROP a rule whose MCP server segment is retired — a server no field
-//       session holds, so the rule pre-approves a tool that does not exist
-//       where it is written. RETIRED_SERVER_PREFIXES is a LIST, not a shape:
-//       a prefix is added when a server is retired, never inferred.
-//   (b) SEED the ten field-MCP read tools for the field's own server, filling
-//       any leftover `mcp__<slug>__` placeholder in place first.
-//   (c) nothing else. Every other allow in the list is the FIELD's — its own
-//       Bash patterns, its own connectors — and is left exactly where it is.
-//
-// With no slug (the template's committed settings.json, which cannot know one)
-// only (a) runs: the placeholders stay placeholders, so the template's file
-// remains a fixed point of this core and provisioning's fill still has
-// something to fill.
+//   (a) DROP a rule that pre-approves a tool no session here holds: a whole
+//       retired server (RETIRED_SERVER_PREFIXES, a LIST matched literally —
+//       a prefix is added when a server is retired, never inferred), or one
+//       of the retired Lyte field-MCP reads (RETIRED_FIELD_READ_TOOLS) under
+//       the template's `<slug>` placeholder or this restaurant's own slug.
+//   (b) SEED the restaurant MCP's read tools under its fixed server name,
+//       `restaurant` (.mcp.json) — no slug needed, so the template's own file
+//       carries them too.
+//   (c) nothing else. Every other allow in the list is the RESTAURANT's — its
+//       own Bash patterns, its own connectors — and is left exactly where it is.
 
-// The field MCP's whole READ surface. Write tools (create_entry, update_entry,
-// set_interface, spawn_lane, …) are deliberately absent: they ask. applyAllows
-// seeds these into the repo's file once the slug is known (.lyte/field.json).
-var FIELD_MCP_READ_TOOLS = [
+// The server name .mcp.json gives the restaurant's Bread 'n' Butter MCP.
+var RESTAURANT_MCP_SERVER = 'restaurant';
+
+// The restaurant MCP's READ surface. Write tools (create_row, update_row) and
+// call_service are deliberately absent: they ask.
+var RESTAURANT_MCP_READ_TOOLS = [
+  'list_tables',
+  'list_rows',
+  'get_row',
+  'recipe_cost',
+  'list_connections',
+];
+
+// The non-MCP allows a restaurant is born with.
+var BASE_ALLOWS = [
+  'Bash',
+  'Read',
+  'Write',
+  'Edit',
+  'Glob',
+  'Grep',
+  'WebSearch',
+  'WebFetch',
+];
+
+// The placeholder the template once shipped for the Lyte field server.
+var SETTINGS_SLUG_PLACEHOLDER = '<slug>';
+
+// MCP server segments no session here holds any more. Each entry is a whole
+// `mcp__<server>__` prefix, matched literally against the start of a rule.
+//
+// `mcp__claude_ai_Supabase__`: the account-level Supabase connector, which a
+// restaurant session must not use — its database is reached through its own
+// restaurant MCP.
+var RETIRED_SERVER_PREFIXES = ['mcp__claude_ai_Supabase__'];
+
+// The Lyte field MCP's read tools, which the template seeded as
+// `mcp__<slug>__<tool>` before the restaurant MCP replaced that door.
+var RETIRED_FIELD_READ_TOOLS = [
   'list_prisms',
   'list_rays',
   'get_ray',
@@ -468,33 +500,8 @@ var FIELD_MCP_READ_TOOLS = [
   'get_approval',
 ];
 
-// The non-MCP allows a field is born with.
-var BASE_ALLOWS = [
-  'Bash',
-  'Read',
-  'Write',
-  'Edit',
-  'Glob',
-  'Grep',
-  'WebSearch',
-  'WebFetch',
-];
-
-// The placeholder the template ships and provisioning fills.
-var SETTINGS_SLUG_PLACEHOLDER = '<slug>';
-
-// MCP server segments no field session holds any more. Each entry is a whole
-// `mcp__<server>__` prefix, matched literally against the start of a rule.
-//
-// `mcp__claude_ai_Supabase__`: the account-level Supabase connector, which a
-// restaurant session must not use — its database is reached through its own
-// field MCP (`.lyte/doors-and-planes.md`).
-var RETIRED_SERVER_PREFIXES = ['mcp__claude_ai_Supabase__'];
-
-// A slug we are willing to WRITE into a rule. Deliberately strict: this one is
-// read from a file on disk, and a bad read must leave the list alone rather
-// than mint `mcp__undefined__list_rays`. (fieldMcpToolAllows below keeps the
-// permissive generator behaviour — provisioning passes a slug it already knows.)
+// A slug we are willing to match a rule against. Deliberately strict: it is
+// read from a file on disk, and a bad read must leave the list alone.
 var SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 function normalizeSlug(slug) {
@@ -504,44 +511,33 @@ function normalizeSlug(slug) {
   return SLUG_RE.test(s) ? s : null;
 }
 
-/** The field-MCP allow rules for one field, or the template's placeholders when `slug` is absent. */
-function fieldMcpToolAllows(slug) {
-  var server = slug || SETTINGS_SLUG_PLACEHOLDER;
-  return FIELD_MCP_READ_TOOLS.map(function (t) { return 'mcp__' + server + '__' + t; });
+/** The restaurant-MCP allow rules. */
+function restaurantMcpToolAllows() {
+  return RESTAURANT_MCP_READ_TOOLS.map(function (t) { return 'mcp__' + RESTAURANT_MCP_SERVER + '__' + t; });
 }
 
-/** The whole `permissions.allow` list a field is born with. */
-function buildAllowList(slug) {
-  return BASE_ALLOWS.concat(fieldMcpToolAllows(slug));
+/** The whole `permissions.allow` list a restaurant is born with. */
+function buildAllowList() {
+  return BASE_ALLOWS.concat(restaurantMcpToolAllows());
 }
 
 /**
- * Which field a CHECKOUT belongs to — pure, given the texts. The caller reads
- * the files (keeper-sync does; the scaffold never needs this — provisioning is
- * told the slug).
+ * Which restaurant a CHECKOUT belongs to — pure, given the texts. The caller
+ * reads the files (keeper-sync does).
  *
  * PRECEDENCE, and why:
- *   1. `.lyte/field.json` → `.slug`. The committed field identity, written by
- *      provisioning's REQUIRED `field_identity` step (src/lib/finalize/
- *      finalize-field.ts) so a session needs no env to know which field it is.
- *      It carries the FINAL slug, after any rename. This is the source that is
- *      supposed to exist on every field checkout.
- *   2. `.lyte/mcp-manifest.md` → the first `…/api/fields/<slug>/mcp` URL. The
- *      field's one door, and delivery rewrites that URL to carry the receiving
- *      field's slug — so it resolves on a field provisioned before the
- *      identity step existed, whose repo has no field.json. The manifest's own
- *      maintenance note pins that URL as the first in the file (session-boot
- *      -core.sh reads it the same way).
- *   3. `FIELD_SLUG` in the environment. LAST, not first: the slug is a
- *      property of the checkout being edited, not of the process editing it,
- *      and keeper-sync's own tests run against temp trees inside a runtime
- *      whose env names a real field. It still earns its place — the keeper
- *      schedule runs keeper-sync on the field's Railway runtime, where a repo
- *      that resolves from neither file has FIELD_SLUG set.
+ *   1. `.lyte/field.json` → `.slug`. The committed identity the hand-off
+ *      writes, so a session needs no env to know which restaurant it is.
+ *   2. `.lyte/mcp-manifest.md` → the first `…/api/restaurants/<slug>/mcp`
+ *      (or, in a repo from before the restaurant MCP, `…/api/fields/<slug>/mcp`)
+ *      URL with a real slug in it.
+ *   3. `RESTAURANT_SLUG` (or the older `FIELD_SLUG`) in the environment. LAST:
+ *      the slug is a property of the checkout being edited, not of the process
+ *      editing it, and keeper-sync's own tests run against temp trees.
  *
- * Returns `{ slug, source }`, both null when nothing resolves — and nothing
- * resolving is a legitimate answer, not an error: applyAllows still drops the
- * retired rules, and leaves the seeding for a run that knows the field.
+ * Returns `{ slug, source }`, both null when nothing resolves — a legitimate
+ * answer: applyAllows still converges, it only cannot recognise rules written
+ * under this restaurant's own slug.
  */
 function resolveFieldSlug(sources) {
   var s = sources || {};
@@ -552,27 +548,38 @@ function resolveFieldSlug(sources) {
       if (fromJson) return { slug: fromJson, source: '.lyte/field.json' };
     } catch {
       // A field.json we cannot parse is not a reason to guess — fall through
-      // to the manifest, which is a source in its own right, not a fallback
-      // for this one's failure.
+      // to the manifest, which is a source in its own right.
     }
   }
   if (typeof s.mcpManifest === 'string' && s.mcpManifest) {
-    var m = s.mcpManifest.match(/https?:\/\/[^\s)]+\/api\/fields\/([^/\s)]+)\/mcp\b/);
+    var m = s.mcpManifest.match(/https?:\/\/[^\s)]+\/api\/(?:restaurants|fields)\/([^/\s)]+)\/mcp\b/);
     var fromManifest = m ? normalizeSlug(m[1]) : null;
     if (fromManifest) return { slug: fromManifest, source: '.lyte/mcp-manifest.md' };
   }
   var env = s.env || {};
-  var fromEnv = normalizeSlug(env.FIELD_SLUG);
-  if (fromEnv) return { slug: fromEnv, source: 'FIELD_SLUG' };
+  var fromEnv = normalizeSlug(env.RESTAURANT_SLUG) || normalizeSlug(env.FIELD_SLUG);
+  if (fromEnv) return { slug: fromEnv, source: normalizeSlug(env.RESTAURANT_SLUG) ? 'RESTAURANT_SLUG' : 'FIELD_SLUG' };
   return { slug: null, source: null };
+}
+
+/** True when `rule` is one this core retires, given the restaurant's slug (or null). */
+function isRetiredRule(rule, slug) {
+  for (var i = 0; i < RETIRED_SERVER_PREFIXES.length; i++) {
+    if (rule.indexOf(RETIRED_SERVER_PREFIXES[i]) === 0) return true;
+  }
+  var servers = [SETTINGS_SLUG_PLACEHOLDER];
+  if (slug && slug !== RESTAURANT_MCP_SERVER) servers.push(slug);
+  for (var j = 0; j < servers.length; j++) {
+    var prefix = 'mcp__' + servers[j] + '__';
+    if (rule.indexOf(prefix) === 0 && RETIRED_FIELD_READ_TOOLS.indexOf(rule.slice(prefix.length)) >= 0) return true;
+  }
+  return false;
 }
 
 /**
  * Converge a `.claude/settings.json`'s `permissions.allow` list on canon.
  *   { content, action, added, filled, removed, slug, error? }
  *   action: 'unchanged' | 'updated' | 'malformed'
- * - `slug` null → act (a) only; the ten reads are not seeded and any
- *   `mcp__<slug>__` placeholder is left for provisioning to fill.
  * - 'malformed' returns the input untouched with `error` set — both for input
  *   this cannot parse and for the (unreachable, therefore checked) case of a
  *   splice that would have written invalid JSON. The allow list is the one
@@ -580,10 +587,12 @@ function resolveFieldSlug(sources) {
  * - Every byte outside the elements it adds or drops is returned as it was,
  *   `permissions` order included. A file with no `permissions.allow` array is
  *   returned untouched: canon maintains that list, it does not invent one.
+ * - `filled` is always 0 (kept for callers that sum it).
  */
 function applyAllows(settingsJsonText, slug) {
   var src = String(settingsJsonText == null ? '' : settingsJsonText);
-  var none = { content: src, action: 'unchanged', added: 0, filled: 0, removed: 0, slug: null };
+  var field = normalizeSlug(slug);
+  var none = { content: src, action: 'unchanged', added: 0, filled: 0, removed: 0, slug: field };
   var parsed;
   try {
     parsed = JSON.parse(src);
@@ -594,27 +603,18 @@ function applyAllows(settingsJsonText, slug) {
     return { content: src, action: 'malformed', added: 0, filled: 0, removed: 0, slug: null, error: 'top level is not a JSON object' };
   }
 
-  var field = normalizeSlug(slug);
-  none.slug = field;
   var arr = findAllowArray(src);
   if (!arr) return none;
 
   var els = arr.elements;
   var vals = els.map(elementString);
-  var drop = vals.map(function (v) {
-    if (v === null) return false;
-    for (var i = 0; i < RETIRED_SERVER_PREFIXES.length; i++) {
-      if (v.indexOf(RETIRED_SERVER_PREFIXES[i]) === 0) return true;
-    }
-    return false;
-  });
+  var drop = vals.map(function (v) { return v !== null && isRetiredRule(v, field); });
 
   var edits = [];
   var removed = 0;
-  var filled = 0;
   var added = 0;
 
-  // (a) Retired servers, dropped in RUNS so that a run of neighbours collapses
+  // (a) Retired rules, dropped in RUNS so that a run of neighbours collapses
   // to one span and the edits stay disjoint: a run followed by a survivor eats
   // up to that survivor's first byte; a run at the tail eats back from the
   // previous survivor's last byte; a run that is the whole list leaves `[]`.
@@ -630,63 +630,43 @@ function applyAllows(settingsJsonText, slug) {
     i = j + 1;
   }
 
-  // (b) Placeholders, filled in place — same position, same neighbours, so a
-  // field that hand-added an eleventh `mcp__<slug>__…` rule gets it filled too.
-  if (field) {
-    var placeholder = 'mcp__' + SETTINGS_SLUG_PLACEHOLDER + '__';
-    for (var k = 0; k < els.length; k++) {
-      if (drop[k] || vals[k] === null) continue;
-      if (vals[k].indexOf(placeholder) !== 0) continue;
-      var tool = vals[k].slice(placeholder.length);
-      if (!/^[A-Za-z0-9_]+$/.test(tool)) continue;
-      edits.push({ from: els[k].start, to: els[k].end, text: JSON.stringify('mcp__' + field + '__' + tool) });
-      filled++;
-    }
-  }
-
   edits.sort(function (a, b) { return b.from - a.from; });
   var out = src;
   for (var e = 0; e < edits.length; e++) {
     out = out.slice(0, edits[e].from) + edits[e].text + out.slice(edits[e].to);
   }
 
-  // (c) Seed whatever the field still lacks, AFTER the drops and fills so the
+  // (b) Seed whatever the restaurant server still lacks, AFTER the drops so the
   // list is re-read in its final shape. Appended after the last rule naming
-  // this field's server — where a reader expects them — or at the end.
-  if (field) {
-    var arr2 = findAllowArray(out);
-    if (arr2) {
-      var vals2 = arr2.elements.map(elementString);
-      var prefix = 'mcp__' + field + '__';
-      var missing = [];
-      for (var t = 0; t < FIELD_MCP_READ_TOOLS.length; t++) {
-        var rule = prefix + FIELD_MCP_READ_TOOLS[t];
-        if (vals2.indexOf(rule) === -1) missing.push(rule);
+  // that server — where a reader expects them — or at the end.
+  var arr2 = findAllowArray(out);
+  if (arr2) {
+    var vals2 = arr2.elements.map(elementString);
+    var prefix = 'mcp__' + RESTAURANT_MCP_SERVER + '__';
+    var missing = restaurantMcpToolAllows().filter(function (rule) { return vals2.indexOf(rule) === -1; });
+    if (missing.length > 0) {
+      added = missing.length;
+      var anchor = null;
+      for (var a = 0; a < arr2.elements.length; a++) {
+        if (vals2[a] !== null && vals2[a].indexOf(prefix) === 0) anchor = arr2.elements[a];
       }
-      if (missing.length > 0) {
-        added = missing.length;
-        var anchor = null;
-        for (var a = 0; a < arr2.elements.length; a++) {
-          if (vals2[a] !== null && vals2[a].indexOf(prefix) === 0) anchor = arr2.elements[a];
-        }
-        if (!anchor && arr2.elements.length > 0) anchor = arr2.elements[arr2.elements.length - 1];
-        if (anchor) {
-          var indent = indentBefore(out, anchor.start);
-          var sep = indent === null ? ', ' : ',\n' + indent;
-          var insert = missing.map(function (r) { return sep + JSON.stringify(r); }).join('');
-          out = out.slice(0, anchor.end) + insert + out.slice(anchor.end);
-        } else {
-          // An empty list has no formatting to preserve; render it from the
-          // indent of the line its `[` sits on.
-          var base = lineIndent(out, arr2.open);
-          var body = missing.map(function (r) { return base + '  ' + JSON.stringify(r); }).join(',\n');
-          out = out.slice(0, arr2.open) + '[\n' + body + '\n' + base + ']' + out.slice(arr2.close + 1);
-        }
+      if (!anchor && arr2.elements.length > 0) anchor = arr2.elements[arr2.elements.length - 1];
+      if (anchor) {
+        var indent = indentBefore(out, anchor.start);
+        var sep = indent === null ? ', ' : ',\n' + indent;
+        var insert = missing.map(function (r) { return sep + JSON.stringify(r); }).join('');
+        out = out.slice(0, anchor.end) + insert + out.slice(anchor.end);
+      } else {
+        // An empty list has no formatting to preserve; render it from the
+        // indent of the line its `[` sits on.
+        var base = lineIndent(out, arr2.open);
+        var body = missing.map(function (r) { return base + '  ' + JSON.stringify(r); }).join(',\n');
+        out = out.slice(0, arr2.open) + '[\n' + body + '\n' + base + ']' + out.slice(arr2.close + 1);
       }
     }
   }
 
-  if (out === src) return { content: src, action: 'unchanged', added: 0, filled: 0, removed: 0, slug: field };
+  if (out === src) return none;
   out = ensureTrailingNewline(out);
   try {
     JSON.parse(out);
@@ -701,7 +681,7 @@ function applyAllows(settingsJsonText, slug) {
       error: 'the allow-list splice would have produced invalid JSON (' + e2.message + ') — nothing written',
     };
   }
-  return { content: out, action: 'updated', added: added, filled: filled, removed: removed, slug: field };
+  return { content: out, action: 'updated', added: added, filled: 0, removed: removed, slug: field };
 }
 
 module.exports = {
@@ -711,11 +691,13 @@ module.exports = {
   canonHooksFor: canonHooksFor,
   applyHooks: applyHooks,
   applyEnv: applyEnv,
-  FIELD_MCP_READ_TOOLS: FIELD_MCP_READ_TOOLS,
+  RESTAURANT_MCP_SERVER: RESTAURANT_MCP_SERVER,
+  RESTAURANT_MCP_READ_TOOLS: RESTAURANT_MCP_READ_TOOLS,
   BASE_ALLOWS: BASE_ALLOWS,
   SETTINGS_SLUG_PLACEHOLDER: SETTINGS_SLUG_PLACEHOLDER,
   RETIRED_SERVER_PREFIXES: RETIRED_SERVER_PREFIXES,
-  fieldMcpToolAllows: fieldMcpToolAllows,
+  RETIRED_FIELD_READ_TOOLS: RETIRED_FIELD_READ_TOOLS,
+  restaurantMcpToolAllows: restaurantMcpToolAllows,
   buildAllowList: buildAllowList,
   resolveFieldSlug: resolveFieldSlug,
   applyAllows: applyAllows,
