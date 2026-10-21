@@ -6,7 +6,5 @@ but have never accumulated judgment. Per the demand-driven roster rule,
 they are candidates for merging into a spectrum generalist until work
 volume justifies a dedicated worker.
 
-- architect
 - content-writer
-- guide
 - keeper

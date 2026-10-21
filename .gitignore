@@ -8,6 +8,8 @@ node_modules/
 .lyte/memory/*/knowledge/
 # memory loop: the recall hook's injection log, regenerated locally
 .lyte/memory/recall-log.jsonl
+# ...and the per-checkout report keeper-sync builds from it
+.lyte/memory/recall-report.md
 
 # the agent job's scratch folder (uploaded as a run artifact, never committed)
 job/
