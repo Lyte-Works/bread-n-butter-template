@@ -7,5 +7,4 @@ they are candidates for merging into a spectrum generalist until work
 volume justifies a dedicated worker.
 
 - content-writer
-- guide
 - keeper

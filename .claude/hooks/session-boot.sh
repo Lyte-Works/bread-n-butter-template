@@ -148,11 +148,12 @@ if [ -n "$ASSISTANT_CTX" ] && [ -f "$ASSISTANT_CTX" ]; then
 fi
 
 # --- Boot facts: this restaurant's MCP (from the manifest + .lyte/field.json) ---
-# A restaurant has ONE door: its field MCP. The manifest is a pointer to that
-# URL; read as the FIRST `https://…/mcp` in the file. When the URL still
-# carries the template's `<slug>` placeholder, the slug in .lyte/field.json
-# fills it; when neither knows the restaurant (a repo before its hand-off), the
-# boot fact says so instead of printing a URL that goes nowhere.
+# A restaurant has ONE door: its Bread 'n' Butter MCP, the `restaurant` server
+# in .mcp.json. The manifest is a pointer to that URL; read as the FIRST
+# `https://…/mcp` in the file. When the URL still carries the template's
+# `<slug>` placeholder, the slug in .lyte/field.json fills it; when neither
+# knows the restaurant (a repo before its hand-off), the boot fact says so
+# instead of printing a URL that goes nowhere.
 mcp=""
 MCP_MANIFEST="$REPO_ROOT/.lyte/mcp-manifest.md"
 if [ -f "$MCP_MANIFEST" ]; then
@@ -168,9 +169,7 @@ case "$mcp" in
   *'<slug>'*)
     if [ -n "$field_slug" ]; then mcp="${mcp//<slug>/$field_slug}"; else mcp=""; not_handed_off=1; fi ;;
 esac
-# The table ids: blank until the hand-off fills them.
-IDS_FILE="$REPO_ROOT/workers/skills/_shared/food-costs-ids.json"
-if [ -f "$IDS_FILE" ] && grep -qE '"recipes"[[:space:]]*:[[:space:]]*""' "$IDS_FILE" 2>/dev/null; then not_handed_off=1; fi
+[ -z "$field_slug" ] && not_handed_off=1
 
 # --- Boot facts: stale lesson anchors (keeper-sync DETECT report) ---
 # Count of lessons whose `touches:` path anchors no longer resolve — a Keeper
@@ -185,33 +184,8 @@ if [ -f "$STALE_REPORT" ]; then
   [ -n "$stale_lessons" ] || stale_lessons=0
 fi
 
-# --- Boot facts: live field connections (runtime sessions only) ---
-# On a field runtime every session carries FIELD_ID + FIELD_SERVICE_TOKEN, and
-# the broker's alias catalog (GET /api/fields/by-id/{id}/broker/aliases) is the
-# model-facing list of what this field's AI may CALL. Print it at boot so a
-# session starts with the current dashboard connections in front of it rather
-# than trusting a tool list cached at MCP connect time (a connection added on
-# the dashboard mid-session is otherwise invisible until reconnect). Off the
-# runtime (no token in env) this prints nothing — the field MCP's connect-time
-# announcement covers those sessions. Fail-soft: 5s cap, any error → silent.
-conns=""
-if [ -n "${FIELD_ID:-}" ] && [ -n "${FIELD_SERVICE_TOKEN:-}" ] && command -v curl >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
-  APP_BASE="${APP_URL:-${LYTE_API_BASE:-https://app.lyte.works}}"
-  APP_BASE="${APP_BASE%/}"
-  conns_json="$(curl -sS -m 5 -H "x-field-token: ${FIELD_SERVICE_TOKEN}" "${APP_BASE}/api/fields/by-id/${FIELD_ID}/broker/aliases" 2>/dev/null || true)"
-  if [ -n "$conns_json" ]; then
-    conns="$(printf '%s' "$conns_json" | node -e '
-      let d = ""; process.stdin.on("data", c => d += c).on("end", () => {
-        try {
-          const rows = (JSON.parse(d).connections || []).filter(r => r && r.alias);
-          process.stdout.write(rows.map(r => r.alias + " (" + r.provider + (r.status && r.status !== "active" ? ", " + r.status : "") + ")" + (r.scope_summary ? " — " + r.scope_summary : "")).join("; "));
-        } catch { /* not the catalog — stay silent */ }
-      });' 2>/dev/null || true)"
-  fi
-fi
-
 # Nothing to report on any axis — stay silent.
-[ "$REPO_PROTECTED" -eq 0 ] && [ -z "$flags" ] && [ -z "$stale" ] && [ -z "$overcap" ] && [ -z "$mcp" ] && [ -z "$conns" ] && [ "$stale_lessons" -eq 0 ] && [ -z "$assistant_ctx" ] && [ -z "$not_handed_off" ] && exit 0
+[ "$REPO_PROTECTED" -eq 0 ] && [ -z "$flags" ] && [ -z "$stale" ] && [ -z "$overcap" ] && [ -z "$mcp" ] && [ "$stale_lessons" -eq 0 ] && [ -z "$assistant_ctx" ] && [ -z "$not_handed_off" ] && exit 0
 
 # THE BYTE BUDGET (2026-10-15). Claude Code hands the model a hook's stdout
 # inline only up to 10,000 bytes; past that the model gets a 2 KB preview and a
@@ -223,11 +197,9 @@ fi
 BUDGET_BYTES="${LYTE_HOOK_BUDGET:-9500}"
 boot_facts() {
   echo "## Boot facts (computed by session-boot hook)"
-  [ -n "$conns" ] && echo "- Field connections (live from the broker, callable as \`<alias>__request\` / \`<alias>__<tool>\` on the field MCP; each shows the scope its policy allows): ${conns}. This list is read fresh at boot; a connection added on the dashboard mid-session is not pushed to an open MCP connection — call \`list_connections\` before saying a service is unavailable."
-  [ -n "$not_handed_off" ] && echo "- NOT HANDED OFF YET: \`.lyte/field.json\` has no slug and/or \`workers/skills/_shared/food-costs-ids.json\` has blank ids — this repo does not know its restaurant. The skills, the write checker and both jobs refuse to run until the new-restaurant hand-off fills them; do not invent ids or a slug."
-  [ -n "$mcp" ] && echo "- Field MCP: ${mcp} — this restaurant's one door (per .lyte/mcp-manifest.md). Everything the restaurant can reach is a tool on it; \`list_connections\` is the live list."
-  [ -n "$mcp" ] && echo "- Documents go to THAT dashboard, as you write them: \`deliver_document\` on the field MCP (\`type\` = the .lyte/deliverables/<type>/ folder; first call creates, \`append: true\` adds each section). The repo file is optional and converges on the same row."
-  [ -n "$mcp" ] && echo "- Open work is ASKED FOR, never grepped: \`list_entries\` on the Task Board (\`rays.task_board\` in workers/skills/_shared/food-costs-ids.json) — parked decisions carry \`human_needed\` true; the dashboard row is the record."
+  [ -n "$not_handed_off" ] && echo "- NOT HANDED OFF YET: \`.lyte/field.json\` has no slug — this repo does not know its restaurant. The skills and the \"Run a skill\" job refuse to run until the new-restaurant hand-off writes it (and sets the BNB_RESTAURANT_TOKEN secret); do not invent a slug or an id."
+  [ -n "$mcp" ] && echo "- Restaurant MCP: ${mcp} — this restaurant's one door, the \`restaurant\` server in .mcp.json (bearer \`\${BNB_RESTAURANT_TOKEN}\`, never printed). Verbs: list_tables · list_rows · get_row · create_row · update_row · recipe_cost · list_connections · call_service. A session with no token in its environment has no door: say so, never look for another way in."
+  [ -n "$mcp" ] && echo "- Open work is ASKED FOR, never grepped: \`list_rows\` on \`decisions\` (\`status\` open or answered) — what a skill parked for the owner; the app is where the owner answers it."
   [ "$REPO_PROTECTED" -eq 1 ] && echo "- Repo mode: PROTECTED — \`main\` requires a branch + PR. Do NOT write to the main checkout directly; route file-creating work through lanes (they branch + PR). Direct writes here strand and can't sync."
   [ -n "$flags" ] && echo "- Synthesis flags pending: ${flags% } — Keeper judgment work, answered one of two ways: become the Keeper in a session (/dispatch keeper), or brief a keeper lane with the synthesis protocol AND its done-conditions (raw entries archived verbatim, lessons promoted or extended with their index lines, flag dropped, two keeper-sync runs converging). A lane briefed with nothing but the role name writes a stray report and never clears the flag — boot-sequence.md §3, Synthesis."
   [ -n "$stale" ] && echo "- Memory dirs with no role file to seed from: ${stale% } — keeper-sync cannot generate their Identity block; add the role file or retire the dir."

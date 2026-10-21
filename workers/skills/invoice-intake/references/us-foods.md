@@ -38,7 +38,7 @@ Ordered Full/Part: <c>/<e>   Reserved Full / Part: <c>/<e>   $<case> CS / $<each
   (`$126.59 CS / $126.59` then `EA` alone).
 - `Ordered Full/Part: c/e` — `c` full cases, `e` eaches (split packs).
   `2/0` → `quantity 2, unit CS`. `0/1` → `quantity 1, unit EA`.
-- `$X CS` → `case_price`. `$Y EA` → `split_price`. Prices may print with one
+- `$X CS` is the case price, `$Y EA` the split price. Prices may print with one
   decimal (`$74.3`) — store as numbers.
 - `unit_price` = X on a CS line, Y on an EA line. Check `quantity × unit_price
   = extended`.
@@ -60,7 +60,7 @@ EA = CS.
 - `PACKER` as brand = generic / packer's label.
 - `#10 CN` = a #10 can (≈ 6–7 lb); keep `#10 can` as the each unit.
 - Leading word is the product family, reversed: `CHEESE, PARMESAN SHAVED` →
-  title "Parmesan, Shaved"; `ONION, GREEN … SCALLION` → "Scallions, Trimmed".
+  ingredient name "Parmesan, Shaved"; `ONION, GREEN … SCALLION` → "Scallions, Trimmed".
 
 ## Traps hit
 

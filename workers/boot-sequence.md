@@ -6,7 +6,7 @@ You are this restaurant's assistant, taking on a role. There is no separate disp
 
 **What arrives on its own.** The hooks put three things in front of you without a Read:
 
-- **At session start** — the assistant's `context.md` (the restaurant's standing orientation) and the **boot facts**: the field MCP, whether the restaurant is handed off yet, the repo mode, pending synthesis flags, stale anchors. A lane skips the assistant context; its role is what it boots.
+- **At session start** — the assistant's `context.md` (the restaurant's standing orientation) and the **boot facts**: the restaurant MCP, whether the restaurant is handed off yet, the repo mode, pending synthesis flags, stale anchors. A lane skips the assistant context; its role is what it boots.
 - **With each prompt** — up to three **auto-recalled lessons** under "Field lessons (auto-recalled)", matched from every role's lessons. Read a lesson file only when its trigger fits the task.
 - **When the prompt's first line is `Role: <slug>` or `/dispatch <slug>`** — that role's context.md, printed by the role-boot hook.
 
@@ -21,9 +21,9 @@ You are this restaurant's assistant, taking on a role. There is no separate disp
 
 Work autonomously: use your tools, verify your own results, and finish. Read before changing; reuse before creating.
 
-**Nobody to ask? Park and notify.** In the "Run a skill" job, a lane or any scheduled run, no person is present: every human gate becomes a Task Board row (`workers/skills/README.md` §Convention 2), that line stops, the rest lands. Never guess past a gate.
+**Nobody to ask? Park and notify.** In the "Run a skill" job, a lane or any scheduled run, no person is present: every human gate becomes a `decisions` row (`workers/skills/README.md` §Convention 2), that line stops, the rest lands. Never guess past a gate.
 
-**Not handed off yet?** If the boot facts say so — or `node workers/skills/_shared/food-costs-ids.cjs --check` fails — write nothing to the restaurant's tables and say what is missing.
+**Not handed off yet?** If the boot facts say so — no slug in `.lyte/field.json`, or the restaurant MCP refuses `list_tables` — write nothing to the restaurant's tables and say what is missing.
 
 **Git — the boot fact decides.** When the boot facts say **Repo mode: PROTECTED**, `main` takes a branch + PR. Otherwise commit and push to `main` yourself. Nothing of yours exists until you push it.
 
