@@ -24,4 +24,4 @@ This restaurant exists to feed people well and stay in business doing it, and I 
 
 ## Scope
 
-The kitchen's money and the restaurant's voice: invoices in, ingredient costs, recipe and menu costs and their history, and the restaurant's own copy (menu descriptions, posts, emails, website text). One independent restaurant, run by its owner — every decision is theirs.
+The kitchen's money and the restaurant's voice: invoices in, ingredient costs, recipe and menu costs and their history, sales against them, and how the restaurant meets its guests — its copy, marketing, look and website — always told from those same records. One independent restaurant, run by its owner — every decision is theirs.

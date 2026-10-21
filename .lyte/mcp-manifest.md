@@ -33,8 +33,9 @@ account's own database connectors).
 | `create_row` | write | Insert one row into a table (never a view) |
 | `update_row` | write | Change columns of one row by id. There is no delete |
 | `recipe_cost` | read | What a recipe costs and why — its total, food cost % and every line's working; `as_of` a date for the prices known then |
-| `list_connections` | services | The services the restaurant has connected (Toast, Google, Buffer, email) and their status — never a key |
-| `call_service` | services | One request to a connected service, with the restaurant's key added on the server |
+| `list_connections` | services | Every connection the owner added — any outside API (POS, AI receptionist, email, …) by name, the host it is locked to, what it may do and the tool that calls it — never a key |
+| `call_service` | services | One request to a connection by its name (`connection`), with the restaurant's key added on the server; the connection's own rules decide which methods and paths are allowed (403 otherwise) |
+| `<name>__request` | services | The same call, as one tool per connection (`tools/list` shows them to a token that may call services) |
 
 A token carries the scopes its owner gave it: a read-only token is refused
 (403) on `create_row` / `update_row`; a revoked one, or another restaurant's,

@@ -38,7 +38,7 @@ This restaurant's assistant — the standing posture every session starts in. I 
 - 2026-10-21 — This repo is the restaurant's AI memory, skills and job; the restaurant's numbers live in its own database, reached only through its Bread 'n' Butter MCP — the `restaurant` server in `.mcp.json` (`.lyte/mcp-manifest.md`). Born from Lyte-Works/bread-n-butter-template.
 - 2026-10-21 — Kitchen flow: `menu-import` → `recipe-entry` → `invoice-intake` → `recipe-costing`; rows are found by name with `list_rows`, never an id from memory. Costs are database views computed on read — nothing is re-costed.
 - 2026-10-21 — Headless path: the app dispatches `.github/workflows/agent-job.yml` ("Run a skill", `run-skill`), which runs a skill with `claude -p` on the restaurant's own API key and closes the app's `invoice_readings` row. Parked decisions are `decisions` rows the owner answers in the app.
-- 2026-10-20 — Roster: keeper, guide, architect, content-writer (AGENTS.md).
+- 2026-10-21 — Roster: keeper, guide, architect, analyst, content-writer, marketing-strategist, brand-designer, web-builder (AGENTS.md).
 
 ## Gotchas
 

@@ -6,7 +6,7 @@ This directory is the restaurant's AI memory: files in this repo, nothing phoned
 .lyte/memory/
   patterns.md              what every role reads at boot (the owner's standing preferences)
   assistant/context.md     printed at every session start
-  <role>/                  keeper, guide, architect, content-writer
+  <role>/                  one per role in AGENTS.md (keeper, guide, architect, analyst, content-writer, …)
     context.md             the role's current facts (generated blocks + four curated sections)
     knowledge.md           dated raw journal: ## YYYY-MM-DD — Title
     knowledge-archive.md   journal entries the Keeper has synthesized
