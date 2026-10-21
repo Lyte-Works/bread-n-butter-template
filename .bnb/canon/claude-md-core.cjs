@@ -112,7 +112,7 @@ function spliceFrameworkBlock(content) {
   return { content: appended.replace(/^\n+/, ''), action: 'appended' };
 }
 
-// Every restaurant repo is born with the assistant and these four roles; a
+// Every restaurant repo is born with the assistant and these eight roles; a
 // restaurant's own roles join the table as its roster grows.
 var DEFAULT_ROLES_TABLE = [
   '| Role | Use when |',
@@ -121,7 +121,11 @@ var DEFAULT_ROLES_TABLE = [
   '| keeper | the restaurant\'s memory: journals, lessons, synthesis, stale-fact sweeps |',
   '| guide | getting a new restaurant set up: the questions about its menu, vendors, kitchen and goals |',
   '| architect | how the restaurant\'s tables, skills and jobs fit together, and changing that |',
+  '| analyst | the week\'s numbers: food cost, plate costs, price moves, usage against sales, menu engineering, prime cost |',
   '| content-writer | copy for the restaurant: menu descriptions, posts, emails, website text |',
+  '| marketing-strategist | bringing guests in and back: promotions, the holiday and local calendar, email and texts, social plans, reviews, loyalty, what it did to sales |',
+  '| brand-designer | how the restaurant looks everywhere: logo, colors, type, photos, menu layout and print, signage, the brand guide |',
+  '| web-builder | the restaurant\'s website: menu pages from its own recipes and prices, hours, location, ordering and booking links, local search |',
   '',
   'A role is a row here plus its file under `workers/` — add the row when the roster grows.',
 ].join('\n');

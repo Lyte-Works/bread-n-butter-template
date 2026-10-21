@@ -12,7 +12,7 @@ Every restaurant on Bread 'n' Butter gets its own private copy of this repositor
 
 There is no re-cost job: every price and recipe cost is a view in the restaurant's database, computed on read.
 
-The roster the AI works as is short: keeper, guide, architect and content-writer (`AGENTS.md`).
+The roster the AI works as (`AGENTS.md`): keeper, guide and architect run the repo; analyst reads the kitchen's numbers; content-writer, marketing-strategist, brand-designer and web-builder carry the restaurant's voice, look and website.
 
 ## The restaurant MCP
 
