@@ -2,7 +2,7 @@
   "mcpServers": {
     "restaurant": {
       "type": "http",
-      "url": "${BNB_APP_URL:-https://bread-n-butter.lyte.works}/api/restaurants/${RESTAURANT_SLUG}/mcp",
+      "url": "${BNB_APP_URL:-https://bread-n-butter.tech}/api/restaurants/${RESTAURANT_SLUG}/mcp",
       "headers": {
         "Authorization": "Bearer ${BNB_RESTAURANT_TOKEN}"
       }

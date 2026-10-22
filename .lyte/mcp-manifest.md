@@ -3,12 +3,12 @@
 One fact for whatever AI opens this repo: which Bread 'n' Butter MCP this
 restaurant's data lives behind. The repo itself holds none of that data.
 
-**Restaurant MCP:** https://bread-n-butter.lyte.works/api/restaurants/<slug>/mcp
+**Restaurant MCP:** https://bread-n-butter.tech/api/restaurants/<slug>/mcp
 
 It is the `restaurant` server in `.mcp.json`:
 
 ```
-url:     ${BNB_APP_URL:-https://bread-n-butter.lyte.works}/api/restaurants/${RESTAURANT_SLUG}/mcp
+url:     ${BNB_APP_URL:-https://bread-n-butter.tech}/api/restaurants/${RESTAURANT_SLUG}/mcp
 header:  Authorization: Bearer ${BNB_RESTAURANT_TOKEN}
 ```
 

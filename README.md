@@ -17,7 +17,7 @@ The roster the AI works as (`AGENTS.md`): keeper, guide and architect run the re
 ## The restaurant MCP
 
 ```
-${BNB_APP_URL:-https://bread-n-butter.lyte.works}/api/restaurants/${RESTAURANT_SLUG}/mcp
+${BNB_APP_URL:-https://bread-n-butter.tech}/api/restaurants/${RESTAURANT_SLUG}/mcp
 Authorization: Bearer ${BNB_RESTAURANT_TOKEN}
 ```
 
@@ -52,7 +52,7 @@ The operator sets these at hand-off:
 | `BNB_RESTAURANT_TOKEN` | secret | The restaurant's scoped `bnb_…` token with **Read + write** (Bread 'n' Butter → Settings → Connect your AI). The job's bearer on the restaurant MCP |
 | `ANTHROPIC_API_KEY` | secret | The restaurant's own AI key. The job runs Claude Code, which reads it |
 | `RESTAURANT_SLUG` | variable | The restaurant's slug. Optional when `.lyte/field.json` carries it; wins when both are set |
-| `BNB_APP_URL` | variable | Optional — the app's address when it is not `https://bread-n-butter.lyte.works` |
+| `BNB_APP_URL` | variable | Optional — the app's address when it is not `https://bread-n-butter.tech` |
 
 Nothing else: no database URL, no storage key, no field token. The invoice file arrives as a signed link in the dispatch.
 
