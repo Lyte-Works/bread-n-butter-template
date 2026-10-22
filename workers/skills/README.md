@@ -23,7 +23,7 @@ Nothing is costed by hand and nothing is re-costed: an ingredient's price and ev
 Every skill reaches the restaurant's data through its own Bread 'n' Butter MCP, the `restaurant` server in `.mcp.json`:
 
 ```
-${BNB_APP_URL:-https://bread-n-butter.lyte.works}/api/restaurants/${RESTAURANT_SLUG}/mcp
+${BNB_APP_URL:-https://bread-n-butter.tech}/api/restaurants/${RESTAURANT_SLUG}/mcp
 Authorization: Bearer ${BNB_RESTAURANT_TOKEN}
 ```
 
