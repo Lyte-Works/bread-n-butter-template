@@ -51,7 +51,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__.*__(create_row|update_row)",
+        "matcher": "mcp__.*__(create_row|update_row|upsert_row|write_rows)",
         "hooks": [
           {
             "type": "command",

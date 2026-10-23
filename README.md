@@ -21,7 +21,7 @@ ${BNB_APP_URL:-https://bread-n-butter.tech}/api/restaurants/${RESTAURANT_SLUG}/m
 Authorization: Bearer ${BNB_RESTAURANT_TOKEN}
 ```
 
-Verbs: `list_tables` · `list_rows` · `get_row` · `create_row` · `update_row` · `recipe_cost` · `list_connections` · `call_service`, plus one `<name>__request` tool per connection the owner added (any API). Claude Code expands the three variables from its environment, so an interactive session needs `RESTAURANT_SLUG` and `BNB_RESTAURANT_TOKEN` exported (the job sets them itself).
+Verbs: `list_tables` · `list_rows` · `get_row` · `create_row` · `update_row` · `upsert_row` · `delete_row` · `write_rows` · `upload_invoice_file` · `recipe_cost` · `list_connections` · `call_service`, plus one `<name>__request` tool per connection the owner added (any API). Claude Code expands the three variables from its environment, so an interactive session needs `RESTAURANT_SLUG` and `BNB_RESTAURANT_TOKEN` exported (the job sets them itself).
 
 ## How the app runs a skill
 

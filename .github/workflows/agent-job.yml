@@ -199,7 +199,7 @@ jobs:
           {
             "hooks": {
               "PostToolUse": [
-                { "matcher": "mcp__restaurant__(create_row|update_row)",
+                { "matcher": "mcp__restaurant__(create_row|update_row|upsert_row|write_rows)",
                   "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PROJECT_DIR:-.}/workers/skills/invoice-intake/hooks/check-write.cjs\"" } ] }
               ]
             }
@@ -226,7 +226,7 @@ jobs:
           cat > job/prompt.md <<EOF
           /$SKILL
 
-          You are running HEADLESS, as GitHub Actions run $RUN_URL for the restaurant \`$SLUG\`. No person is present in this session. Work the /$SKILL skill end to end on the payload below, exactly as its SKILL.md says for a headless run. The restaurant's data is reached ONLY through the \`restaurant\` MCP server (list_tables · list_rows · get_row · create_row · update_row · recipe_cost); there is no other way in.
+          You are running HEADLESS, as GitHub Actions run $RUN_URL for the restaurant \`$SLUG\`. No person is present in this session. Work the /$SKILL skill end to end on the payload below, exactly as its SKILL.md says for a headless run. The restaurant's data is reached ONLY through the \`restaurant\` MCP server (list_tables · list_rows · get_row · create_row · update_row · upsert_row · delete_row · write_rows · upload_invoice_file · recipe_cost); there is no other way in.
 
           ## Payload
           \`\`\`json
@@ -240,7 +240,7 @@ jobs:
           - **A payload with \`invoice_id\` is a resume:** the invoice is already in. Read no file, create no invoice or line; apply each \`decisions\` row of it with \`status\` "answered" as the skill says, and mark each one "done".
           - **Refuse duplicates on a first reading** (skill step 2b): an invoice from the same vendor with the same invoice number that already has lines → write nothing, finish with status "duplicate".
           - **Never write \`invoice_readings\`.** This job closes the hand-off itself from your outcome.
-          - **A hook re-checks each stored row** after every create_row / update_row; fix anything it blocks before moving on.
+          - **A hook re-checks each stored row** after every create_row / update_row / upsert_row, and each write of a write_rows batch by its index; fix anything it blocks before moving on.
           - **Write two files before you finish**, in this checkout:
             - \`job/report.md\` — the skill's full report (its Verification table first, then everything the skill's Report step asks for, then the decisions you parked, by title). Plain kitchen words: recipe, ingredient, invoice, vendor item, dish.
             - \`job/outcome.json\` — one JSON object: \`{"status":"read"|"duplicate"|"done"|"failed","invoice_id":"<invoices.id or null>","parked":["<decision title>",…],"summary":"<one line for the owner>"}\`. "read" is an invoice read and written (a resume that finished its answers is "read" too); "done" is any other skill finished; "failed" only when the skill could not finish (a total that will not close, an unreadable file) — say why in summary.

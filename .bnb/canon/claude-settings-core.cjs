@@ -21,7 +21,7 @@
 // Each command points at a hook in `.claude/hooks/`, except the write checker,
 // which lives with the skill it serves (workers/skills/invoice-intake/hooks/)
 // and is always wired: it re-does the per-row arithmetic on every row the
-// restaurant MCP stores (`create_row` / `update_row`).
+// restaurant MCP stores (`create_row` / `update_row` / `upsert_row`, and each write of a `write_rows` batch).
 // `CLAUDE_PROJECT_DIR` is Claude Code's repo-root variable; the `:-.}` fallback
 // keeps the command valid if it is ever unset. A `.claude/hooks/` script the
 // repo does not carry is not wired (applyHooks' `present` filter): wiring a
@@ -64,7 +64,7 @@ var CANON_HOOKS = {
   ],
   PostToolUse: [
     {
-      matcher: 'mcp__.*__(create_row|update_row)',
+      matcher: 'mcp__.*__(create_row|update_row|upsert_row|write_rows)',
       hooks: [
         {
           type: 'command',
@@ -452,8 +452,9 @@ function applyEnv(settingsJsonText) {
 // The server name .mcp.json gives the restaurant's Bread 'n' Butter MCP.
 var RESTAURANT_MCP_SERVER = 'restaurant';
 
-// The restaurant MCP's READ surface. Write tools (create_row, update_row) and
-// call_service are deliberately absent: they ask.
+// The restaurant MCP's READ surface. Write tools (create_row, update_row,
+// upsert_row, delete_row, write_rows, upload_invoice_file) and call_service are
+// deliberately absent: they ask.
 var RESTAURANT_MCP_READ_TOOLS = [
   'list_tables',
   'list_rows',

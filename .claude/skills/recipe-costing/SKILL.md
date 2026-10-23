@@ -24,7 +24,8 @@ the cost and explain it** in words a cook can check.
 | Where | What it gives |
 |---|---|
 | `recipe_cost` `{ recipe_id }` | the recipe's `recipe_costs` row — `total_cost`, `cost_per_yield_unit`, `food_cost_pct` (menu dishes), `status` (`costed` · `cost incomplete` · `cost incomplete: loop or too deep`), `incomplete_lines` — and every line from `recipe_line_costs` with `unit_cost`, `line_cost`, `status` and **`working`**, the line's math in words |
-| `recipe_cost` `{ recipe_id, as_of: "YYYY-MM-DD" }` | the same, with only the prices known on that date |
+| `recipe_cost` `{ recipe_id, as_of: "YYYY-MM-DD" }` | the same, with only the prices known on that date and the recipe as it was that day (its lines, yield and menu price) |
+| `list_rows` `recipe_line_versions` / `recipe_versions` | the recipe's history, kept by the database: each old version of a line or of the recipe's yield / menu price, with `valid_from` → `valid_to`. Read-only. Changes on the day a recipe got its first line are its starting recipe and keep no version |
 | `list_rows` `recipe_costs` | every recipe at once (filter `is_prep`, sort `-food_cost_pct`) |
 | `list_rows` `cost_alerts` | dishes over **30%**, or up **2+ points** since the day before the latest delivery |
 | `list_rows` `ingredient_costs` | each ingredient's price per base unit, the date and the vendor it came from |
@@ -41,7 +42,10 @@ The rounding is fixed: a line `round(quantity × unit cost, 4)`, the total
 1. **Find the recipe** — `list_rows` on `recipes` filtered by `name` (or
    take the id you were handed).
 2. **Read its cost** — `recipe_cost`. For "what moved", read it twice: now, and
-   `as_of` the day before the delivery in question (the alert baseline).
+   `as_of` the day before the delivery in question (the alert baseline). A
+   move is prices, the recipe, or both: if `recipe_line_versions` (or
+   `recipe_versions`) has a row for it with `valid_to` in that window, say
+   which line or setting changed, not only which price.
 3. **Go down any prep line** that matters to the question — `recipe_cost` on
    its `sub_recipe_id`.
 4. **Name each incomplete line** and its cause: `no quantity`, `unit

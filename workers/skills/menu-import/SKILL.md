@@ -8,7 +8,8 @@ kind: procedure
 
 <!-- Restaurant skill. It reaches the restaurant's data ONLY through the
 restaurant's own Bread 'n' Butter MCP (`.mcp.json`; verbs list_tables ·
-list_rows · get_row · create_row · update_row · recipe_cost). Column names are
+list_rows · get_row · create_row · update_row · upsert_row · delete_row ·
+write_rows · recipe_cost). Column names are
 the restaurant database's (supabase/restaurant/ in the app repo); when a
 migration changes one, update the table here in the same change. There is no
 separate menu-items table: a menu dish is a recipe with `is_prep` false and a
@@ -27,7 +28,7 @@ is recipe-entry's job.
 | Column | Fill with |
 |---|---|
 | `name` | The dish name as printed, title-cased, menu jargon kept ("Falafel Plate", "The Hangover Burger"). Descriptions stay out of the name |
-| `category` | The menu's own section heading as printed, title-cased ("Mezze", "Mains", "Brunch Cocktails"). No section on the menu → empty, not a guess |
+| `category` | The menu's own section heading as printed, title-cased ("Mezze", "Mains", "Brunch Cocktails"). No section on the menu → empty, not a guess. When a heading matches a category the restaurant already uses, ignoring case, reuse that spelling; otherwise keep the heading as printed |
 | `menu_price` | The printed price, as a number (`14.00` for "$14" or "14"). Never rounded, never adjusted |
 | `is_prep` | `false` — always. A menu dish is never a prep recipe |
 | `yield_quantity` | `1` |
@@ -62,8 +63,18 @@ incomplete* until recipe-entry gives the dish its lines.
    one `decisions` row (`create_row`) with `kind` `menu_import`, `status`
    `open`, `title` `Confirm menu import — <restaurant> (<n> dishes)` and the
    full table in `notes` — then stop and report that it is parked.
-6. **Write one dish**, check the stored row in the reply: every column landed
-   as sent, `is_prep` false, yield `1 portion`. Then write the rest.
+6. **Write the menu in one go**: every `new` dish of the confirmed table as a
+   `create` on `recipes` in ONE `write_rows`, in menu order — the whole menu
+   lands or none of it does, never a half-imported menu that looks finished.
+   More than 200 dishes → batches of 200, in menu order; each batch is whole,
+   and a re-run re-matches by name (step 4), so a batch that already landed
+   is never created twice. Check the stored rows in the reply against what
+   was sent: every column, `is_prep` false, yield `1 portion`.
+   **Refused** → nothing in that batch was written; the refusal names the
+   failing write's index — read that dish's row, fix it (a stray column, a
+   price that isn't a number), and re-send the whole batch. Never drop the
+   dish to make the rest go through: a dish left out is said so at the gate,
+   not by the error.
 7. **Verify** — every check in Verification below, every import. Fix what
    fails, re-run, then report.
 8. **Hand off** to **recipe-entry**: the list of new dish ids and names, in
@@ -103,6 +114,35 @@ map "Shareables" to "Appetizers". No sections → blank.
 **Drinks.** Imported like any dish when they're on the menu at a price; a bar
 list the person didn't ask for is mentioned at the gate, not imported
 unasked.
+
+## Resuming
+
+When the owner answers a parked `menu_import` decision in Bread 'n' Butter
+(Food costs → To check → Decisions), the app writes the answer onto the
+`decisions` row (`status` `answered`, `answer`, `answered_by`,
+`answered_at`) and runs this skill with:
+
+```
+{ "decision_id": "<decisions.id>" }
+```
+
+The answer is one of `Approved as proposed.` (the parsed table in `notes` is
+confirmed) or `Edit before adding: <note>` (apply the note to the table
+first). ("Leave it as it is." never reaches you: the app settles it.)
+
+1. **Load the decision** (`get_row` on `decisions`). Not `answered`, or not
+   `menu_import` → write nothing; report why.
+2. **The table in `notes` is the confirmed gate** (step 5) — re-read
+   `recipes` live and re-match by name, so a dish added since is `exists`, not
+   created twice. An edit that doesn't settle a row on its own (which dish,
+   which price) → set the row back to `open`, adding to `notes` what you need.
+3. **Write and verify** as steps 6–7, with the decision's `done` (one line
+   added to `notes`: applied by the job, with the date) as an `update` at the
+   end of the last batch — so the decision is marked done exactly when its
+   dishes are in, and a refused batch leaves it `answered` to run again.
+4. **Hand off** as step 8.
+
+A resumed run never asks anyone: what it still can't settle it parks again.
 
 ## Verification
 

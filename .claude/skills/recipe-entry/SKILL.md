@@ -9,7 +9,8 @@ description: "Enter what goes into a dish — from a recipe card, a spreadsheet,
 
 <!-- Restaurant skill. It reaches the restaurant's data ONLY through the
 restaurant's own Bread 'n' Butter MCP (`.mcp.json`; verbs list_tables ·
-list_rows · get_row · create_row · update_row · recipe_cost). Column names
+list_rows · get_row · create_row · update_row · upsert_row · delete_row ·
+write_rows · recipe_cost). Column names
 are the restaurant database's (supabase/restaurant/ in the app repo); when a
 migration changes one, update the tables here in the same change.
 `list_tables` is the live truth. Costing belongs to the database's views
@@ -89,19 +90,61 @@ there is one, is the view `ingredient_costs` (`cost_per_unit`, `priced_on`,
    with its yield. Write after the person confirms. A new ingredient is created
    **only** on that confirmation. **When no person is present** (a lane, the
    repo's agent job): write the ready lines only, and park everything that
-   needs a person as **one decision per dish** — `create_row` on `decisions`
-   with `kind` `recipe_lines`, `recipe_id` the dish, `status` `open`, `title`
+   needs a person as **one decision per dish** — a `decisions` row, written in
+   the same `write_rows` as the dish's ready lines (step 8), with `kind` `recipe_lines`, `recipe_id` the dish, `status` `open`, `title`
    `Recipe entry needs you — <dish>`, and in `notes` each held line with its
    quantity, unit and what would clear it ("create ingredient Lemons, unit
    each?", "each weight for Limes"). Then stop.
-7. **Preps first.** Enter any new prep recipe's lines and check it with
-   `recipe_cost` (its `status` is `costed`) before a dish line points at it.
-8. **Write one line**, check the stored row (links, quantity, unit as sent).
-   Then the rest.
+7. **Preps first.** A new prep recipe goes in as one `write_rows`: the
+   `recipes` row with a uuid you chose, then its lines pointing at that uuid
+   (and any new ingredient the owner confirmed for it, before the lines that
+   use it). Check it with `recipe_cost` (its `status` is `costed`) before a
+   dish line points at it.
+8. **Write the dish's lines in one go**: every ready line as a `create` on
+   `recipe_lines` in ONE `write_rows` — with, ahead of them, any new
+   ingredient the owner confirmed (its uuid chosen by you, so the line can
+   name it). A dish is never left with half its card. Check the stored rows
+   in the reply against what was sent (links, quantity, unit).
+   **Refused** → nothing was written; the refusal names the failing write's
+   index — read that line, fix it (both sources set, a unit that isn't the
+   source's), and re-send the whole batch. Never drop the line to get the
+   rest through: a line not written is held, with its reason, at the gate.
 9. **Verify** — every check below. Fix, re-run, then report.
 10. **Explain the cost** with **recipe-costing**: `recipe_cost` on each dish
     touched — its total, cost per portion, food cost % and every line's
     `working` go in your report.
+
+## Resuming
+
+When the owner answers a parked `recipe_lines` decision in Bread 'n' Butter
+(Food costs → To check → Decisions), the app writes the answer onto the
+`decisions` row (`status` `answered`, `answer`, `answered_by`,
+`answered_at`) and runs this skill with:
+
+```
+{ "decision_id": "<decisions.id>" }
+```
+
+The answer is `Approved as proposed.` (create what the notes propose — each
+new ingredient as listed — and write the held lines) or `Edit before
+adding: <note>` (apply the note first). ("Leave it as it is." never reaches
+you: the app settles it.)
+
+1. **Load the decision** (`get_row` on `decisions`) and its dish
+   (`recipe_id`). Not `answered`, or not `recipe_lines` → write nothing;
+   report why.
+2. **Re-sort the held lines** in `notes` by step 5 against the database as it
+   is now — an invoice may have priced an ingredient since it was parked.
+3. **Apply the answer** in one `write_rows`: an approved new ingredient is
+   created as proposed (the owner's say-so is this answer), every line whose
+   ingredient now has a price is written (steps 7–8), and the decision is
+   closed at the end of the same batch — everything landed → `status` `done`,
+   adding one line to `notes` (applied by the job, with the date); anything
+   still held → `status` `open`, `notes` rewritten to the lines still held and
+   what clears each. A line still without a price, or a note that doesn't
+   settle a line on its own, stays held. A refused batch leaves the decision
+   `answered` and nothing half-applied: fix the named write and re-send.
+4. **Verify and explain** as steps 9–10.
 
 ## Rules
 
@@ -136,6 +179,15 @@ recipe never uses itself. A prep that would contain itself is a loop — stop
 (the database would cost it *cost incomplete: loop or too deep*).
 
 **Supplies aren't ingredients.** Foil, the to-go box, gloves: not lines.
+
+**Delete only your own mistake.** `delete_row` on `recipe_lines` removes a
+line **this session wrote wrongly** — the wrong ingredient picked, a line
+written twice — and nothing else. A line that was on the dish before this
+session is the owner's: changing or removing it waits for the owner's word
+in this conversation (or an answered decision that says so), and an owner's
+line that looks wrong is shown and asked about, never quietly fixed. Say in
+the report every line you deleted and why. A wrong value on a line you wrote
+is usually an `update_row`, not a delete and a re-create.
 
 ## Conversions
 
