@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 'use strict';
 // IS: The kitchen skills' write checker — re-does the per-row arithmetic on
-//     every row the restaurant MCP just wrote (`create_row` / `update_row` on
-//     invoice_lines, vendor_items, ingredients, recipes, recipe_lines,
-//     decisions) and hands any mismatch back to the model as a blocking
-//     reason. Wired as a PostToolUse hook on `mcp__.*__(create_row|update_row)`
-//     (the restaurant repo's agent job wires it; .claude/settings.json can
-//     too). Reads the Claude Code hook JSON on stdin and checks only the
-//     stored row the tool returned (`{ "row": … }`), so it needs no network
-//     and no credential.
+//     every row the restaurant MCP just wrote (`create_row` / `update_row` /
+//     `upsert_row`, and every create / update / upsert inside a `write_rows`
+//     batch, on invoice_lines, vendor_items, ingredients, recipes,
+//     recipe_lines, decisions) and hands any mismatch back to the model as a
+//     blocking reason. Wired as a PostToolUse hook on
+//     `mcp__.*__(create_row|update_row|upsert_row|write_rows)` (the restaurant
+//     repo's agent job wires it; .claude/settings.json can too). Reads the
+//     Claude Code hook JSON on stdin and checks only the stored rows the tool
+//     returned (`{ "row": … }`, or a batch's `{ "results": [{ "row": … }, …] }`
+//     paired with its `writes` by index), so it needs no network and no
+//     credential. A refused batch rolled back whole and returns no rows —
+//     nothing to check.
 // IS NOT: A gate on the MCP itself (the write has already landed — the model
 //     fixes it), a cross-row check (links and the invoice-total close are the
 //     skill's read-back steps), or a cost check: costs are the restaurant
@@ -101,23 +105,10 @@ function checkDecision(row, created, problems) {
   }
 }
 
-// The hook payload → a list of problems (empty when the row is right).
-function check(payload) {
-  var name = String(payload.tool_name || '');
-  var m = name.match(/(create_row|update_row)$/);
-  if (!m) return [];
-  var input = payload.tool_input || {};
-  var resp = payload.tool_response;
-  if (Array.isArray(resp)) resp = resp.map(function (b) { return b && b.text; }).join('');
-  if (resp && typeof resp === 'object' && Array.isArray(resp.content)) resp = resp.content.map(function (b) { return b && b.text; }).join('');
-  var body;
-  try { body = typeof resp === 'string' ? JSON.parse(resp) : resp; } catch (e) { return []; }
-  var row = body && body.row;
-  if (!row || typeof row !== 'object') return [];
-  var written = input.values || {};
-  var created = m[1] === 'create_row';
+// One stored row → its problems, each prefixed with the table and id.
+function checkRow(table, row, written, created) {
   var problems = [];
-  switch (input.table) {
+  switch (table) {
     case 'invoice_lines': checkInvoiceLine(row, written, created, problems); break;
     case 'vendor_items': checkVendorItem(row, written, created, problems); break;
     case 'ingredients': checkIngredient(row, problems); break;
@@ -126,7 +117,52 @@ function check(payload) {
     case 'decisions': checkDecision(row, created, problems); break;
     default: return [];
   }
-  return problems.map(function (p) { return input.table + ' ' + (row.id || '') + ': ' + p; });
+  return problems.map(function (p) { return table + ' ' + (row.id || '') + ': ' + p; });
+}
+
+// An upsert writes `match` ∪ `values` when it creates, only `values` when it updates.
+function writtenBy(op, write, created) {
+  var values = write.values || {};
+  return op === 'upsert' && created ? Object.assign({}, write.match || {}, values) : values;
+}
+function createdBy(op, result) {
+  return op === 'create' || (op === 'upsert' && !!(result && (result.created === true || result.created === 'true')));
+}
+
+// The hook payload → a list of problems (empty when every stored row is right).
+function check(payload) {
+  var name = String(payload.tool_name || '');
+  var m = name.match(/(create_row|update_row|upsert_row|write_rows)$/);
+  if (!m) return [];
+  var input = payload.tool_input || {};
+  var resp = payload.tool_response;
+  if (Array.isArray(resp)) resp = resp.map(function (b) { return b && b.text; }).join('');
+  if (resp && typeof resp === 'object' && Array.isArray(resp.content)) resp = resp.content.map(function (b) { return b && b.text; }).join('');
+  var body;
+  try { body = typeof resp === 'string' ? JSON.parse(resp) : resp; } catch (e) { return []; }
+  if (!body || typeof body !== 'object') return [];
+  if (m[1] === 'write_rows') {
+    var writes = Array.isArray(input.writes) ? input.writes : [];
+    var results = Array.isArray(body.results) ? body.results : [];
+    var out = [];
+    writes.forEach(function (w, i) {
+      var op = w && w.op;
+      if (['create', 'update', 'upsert'].indexOf(op) < 0) return;
+      var r = results[i];
+      var row = r && r.row;
+      if (!row || typeof row !== 'object') return;
+      var created = createdBy(op, r);
+      checkRow(w.table, row, writtenBy(op, w, created), created).forEach(function (p) {
+        out.push('write ' + i + ' (' + op + ') ' + p);
+      });
+    });
+    return out;
+  }
+  var row = body.row;
+  if (!row || typeof row !== 'object') return [];
+  var op = m[1].replace('_row', '');
+  var created = createdBy(op, body);
+  return checkRow(input.table, row, writtenBy(op, input, created), created);
 }
 
 function selfTest() {
@@ -155,6 +191,43 @@ function selfTest() {
   assert.strictEqual(check(call('create_row', 'decisions', {}, Object.assign({}, dec, { invoice_id: null }))).length, 1, 'an invoice decision names its invoice');
   assert.deepStrictEqual(check({ tool_name: 'mcp__x__list_rows', tool_input: { table: 'invoice_lines' }, tool_response: '{}' }), [], 'reads are ignored');
   assert.deepStrictEqual(check(call('create_row', 'invoices', {}, {})), [], 'tables with no rules pass');
+
+  // upsert_row: created → match ∪ values were written; updated → only values.
+  function upsert(table, match, values, row, created) {
+    return { tool_name: 'mcp__restaurant__upsert_row', tool_input: { table: table, match: match, values: values },
+      tool_response: [{ type: 'text', text: JSON.stringify({ row: Object.assign({ id: 'r1' }, row), created: created }) }] };
+  }
+  assert.deepStrictEqual(check(upsert('vendor_items', { vendor_id: 'v', item_code: '7929170' }, vi, vi, true)), [], 'an upserted new vendor item passes');
+  assert.strictEqual(check(upsert('vendor_items', { vendor_id: 'v', item_code: '7929170' }, {}, Object.assign({}, vi, { verified: true }), true)).length, 1, 'an upsert that creates starts unverified');
+  assert.deepStrictEqual(check(upsert('vendor_items', { vendor_id: 'v', item_code: '7929170' }, { description: 'x' }, Object.assign({}, vi, { verified: true }), false)), [], 'an upsert that updates leaves the owner\'s tick alone');
+
+  // write_rows: every create / update / upsert is checked against its own result, by index.
+  function batch(writes, results) {
+    return { tool_name: 'mcp__restaurant__write_rows', tool_input: { writes: writes },
+      tool_response: [{ type: 'text', text: JSON.stringify({ results: results }) }] };
+  }
+  var inv = { id: 'i', vendor_id: 'v', invoice_no: '123', invoice_total: '164.84' };
+  var line2 = Object.assign({}, line, { id: 'l2', description: 'PARMESAN GRATED' });
+  var good = [
+    { op: 'create', table: 'invoices', id: 'i', values: inv },
+    { op: 'create', table: 'invoice_lines', values: line },
+    { op: 'create', table: 'invoice_lines', values: line2 },
+    { op: 'update', table: 'invoice_lines', id: 'l2', values: { vendor_item_id: 'vi' } },
+    { op: 'create', table: 'decisions', values: dec },
+  ];
+  var goodResults = [{ row: inv }, { row: Object.assign({ id: 'l1' }, line) }, { row: line2 },
+    { row: Object.assign({}, line2, { vendor_item_id: 'vi' }) }, { row: Object.assign({ id: 'd1' }, dec) }];
+  assert.deepStrictEqual(check(batch(good, goodResults)), [], 'a good batch passes');
+  var bad = good.slice(); bad[2] = { op: 'create', table: 'invoice_lines', values: off };
+  var badResults = goodResults.slice(); badResults[2] = { row: Object.assign({ id: 'l2' }, off) };
+  var found = check(batch(bad, badResults));
+  assert.strictEqual(found.length, 1, 'one bad write in a good batch blocks, alone');
+  assert.ok(/^write 2 \(create\) invoice_lines l2: /.test(found[0]), 'the problem names the write\'s index: ' + found[0]);
+  assert.strictEqual(check(batch([{ op: 'upsert', table: 'recipes', match: { name: 'Soup' }, values: {} }],
+    [{ row: { id: 'r', is_prep: false, yield_quantity: '2', yield_unit: 'portion' }, created: true }])).length, 1, 'an upsert inside a batch is checked');
+  assert.deepStrictEqual(check(batch([{ op: 'delete', table: 'recipe_lines', id: 'x' }], [{ deleted: 'x' }])), [], 'a delete has no row to check');
+  assert.deepStrictEqual(check({ tool_name: 'mcp__restaurant__write_rows', tool_input: { writes: good },
+    tool_response: [{ type: 'text', text: 'write 2 refused: …; nothing was written' }] }), [], 'a refused batch rolled back — nothing to check');
   console.log('check-write: self-test passed');
 }
 

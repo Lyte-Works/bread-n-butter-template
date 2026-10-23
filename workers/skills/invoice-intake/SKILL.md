@@ -9,7 +9,7 @@ kind: procedure
 <!-- Restaurant skill. It reaches the restaurant's data ONLY through the
 restaurant's own Bread 'n' Butter MCP (`.mcp.json` → /api/restaurants/<slug>/mcp,
 verbs list_tables · list_rows · get_row · create_row · update_row ·
-recipe_cost). It never holds a database address. The column names below are
+upsert_row · delete_row · write_rows · upload_invoice_file · recipe_cost). It never holds a database address. The column names below are
 the restaurant database's (supabase/restaurant/ in the app repo); when a
 migration adds or renames one, update the tables here in the same change.
 `list_tables` is the live truth. Vendor-specific reading rules live in
@@ -30,7 +30,18 @@ fill and no re-cost to run.
 ## Base Structure
 
 Six tables. Write by **column name**; `id` is generated when left out, and
-every `create_row` / `update_row` answers with the stored row.
+every write answers with the stored row (`write_rows` with one per write, in
+order).
+
+**An invoice lands whole or not at all.** The invoice and every one of its
+lines go in ONE `write_rows` batch — all its writes in one transaction, in
+order, so a refusal anywhere rolls every one of them back. Half an invoice is
+worse than none: its total won't close and the next run would take it for a
+duplicate. Because a line must name its invoice before the invoice exists,
+**you choose the ids**: a fresh uuid for the invoice, and one for each new
+vendor, vendor item or ingredient the batch creates, so the writes after it
+can point at it. `create_row` / `update_row` stay for one write that stands
+alone — answering one decision's single field, fixing one value.
 
 ```
 ingredients  ←── vendor_items ──→ vendors
@@ -63,7 +74,7 @@ lines can buy one vendor item (every week's order).
 | `invoice_date` | Date the invoice/order was issued (`YYYY-MM-DD`) |
 | `delivery_date` | Delivery date (expected, if that's all the paper gives). **This is the date the prices take effect** |
 | `invoice_total` | The printed grand total |
-| `file_path` | The payload's `file_path` (the dropped file in the app's storage), as given — never a URL you made |
+| `file_path` | Where the original file is stored: the payload's `file_path` when the app handed you a dropped file; the `file_path` `upload_invoice_file` answered when someone gave you the file directly (step 7b). Never a URL you made |
 | `location_id` | Leave empty |
 
 ### `invoice_lines` — one row per invoice line
@@ -93,6 +104,7 @@ Found, not re-created, on every later invoice.
 | `description` | As on the first invoice line that introduced it |
 | `brand` | Manufacturer, title-cased ("Grande Cheese Company"). "Packer" when the vendor prints Packer |
 | `pack_count` · `pack_each_size` · `pack_each_unit` | The case broken down: `9/3 LB` → 9 · 3 · `lb`. Each unit lower-case: `lb` `oz` `g` `kg` `fl oz` `l` `ml` `gal` `pt` `qt` `ea` or the piece (`clamshell`, `#10 can`) |
+| `pack_name` | What one pack is called, lower-case singular, when the invoice or label names it: `BAG` → `bag`, `2/5 LB LOG` → `log`, `TUB`, `JUG`, `CAN`. The screens then say "2 bags of 2 lb". Empty when nothing names it — never guess |
 | `base_units_per_case` | How many of the ingredient's base unit one case holds (Conversions) |
 | `base_unit` | The ingredient's `unit`, repeated — **must equal it**, or the database prices the line as nothing at all |
 | `verified` | `false` on create. **Owner only** — never set it true; never write `verified_by` |
@@ -184,18 +196,43 @@ fits, stop and ask — don't stretch a category.
    vendor or whenever a line needed a guess. A known vendor with nothing
    inferred can go straight in. Headless (no one to show): write the reconciled
    lines as parsed and put every guess in the report, by line.
-7. **Write the vendor** (create it only when `list_rows` found none) and **the
-   invoice**. Read the stored row in the reply.
-8. **Write one line**, check the stored row (numbers as sent, `invoice_id`
-   set). Then write the rest. Lines are written unmapped (`vendor_item_id`
-   empty) unless the vendor item is already known — then link it in the same
-   `create_row`.
+7. **Settle the mapping before the write** (Mapping): look up every line's
+   vendor item by code now, so the batch can link the known ones. A new
+   product is proposed — shown to the person present, who approves or edits
+   it, or (headless) parked as a `new_product` decision with the line left
+   unmapped.
+7b. **Keep the original.** No payload `file_path` (the file came to you in a
+   chat, an email, a folder — not through the app's drop) → store it with
+   `upload_invoice_file` before the batch: `content_base64` for a file up to
+   3 MB, or leave it out, PUT the bytes to the `upload_url` it answers, and
+   use its `file_path`. The invoice's `file_path` in the batch is that path,
+   so the owner opens the original from the invoice. A refusal here doesn't
+   stop the invoice: write it without `file_path` and say so in the report.
+8. **Write it in one batch.** One `write_rows`, in this order: the vendor
+   (only when `list_rows` found none), the invoice, every new ingredient the
+   owner approved, every new vendor item the owner approved, then every line
+   — linked (`vendor_item_id`) when its vendor item is known or was just
+   approved, unmapped otherwise — then any decision you park (it names its
+   line, so give the lines their own uuids too). Each create carries the uuid
+   you chose. Supplies are lines like any other, never vendor items.
+   - **Refused** → nothing was written. The refusal names the failing write's
+     index: read that write, fix it (the wrong column, the bad number, the
+     missing link), and **re-send the whole batch** — the same uuids are free
+     again. Never send the rest without it, and never fall back to writing
+     line by line.
+   - **No answer** (a timeout, a dropped connection) → the batch may or may
+     not have landed. `get_row` on the invoice's uuid tells you which; re-send
+     only when it isn't there.
+   - **Too big** — more than 200 writes. The invoice and its lines still go
+     together in the first batch; the decisions follow in a second. An
+     invoice of more than 199 lines can't land whole: stop and say so rather
+     than split it.
 9. **Verify** by listing `invoice_lines` for this invoice: right count, totals
    sum to `invoice_total`.
-10. **Map** each line (Mapping): known vendor item → `update_row` the line's
-    `vendor_item_id`; new product → propose vendor item + ingredient +
-    conversion — park a `new_product` decision and leave the line unmapped, or,
-    when a person is present, show the table and write after they confirm.
+10. **Map what was left** — a line whose vendor item the owner approves after
+    the write: the new ingredient, the vendor item and the line's link in one
+    `write_rows`, so a product is never half-created. Linking several waiting
+    lines to vendor items that already exist is also one batch of updates.
 11. **Read the prices back** — `list_rows` on `ingredient_costs` filtered by
     each touched `ingredient_id`: `priced_on` is this invoice's delivery date
     and `vendor` this vendor, unless a later invoice already priced it. A
@@ -322,8 +359,9 @@ silent: say what it blocks and what would clear it.
 **new vendor item** (its ingredient and conversion), a **new ingredient**, a
 **missing each weight** (or density) a conversion needs, and a **line that
 will not reconcile** (check 1 fails and the cause isn't found). The default is
-to **park** the decision, not to wait for it: `create_row` on `decisions` and
-stop that line —
+to **park** the decision, not to wait for it: a `decisions` row — inside the
+invoice's batch on a first reading, one `create_row` when it is parked on its
+own — and stop that line —
 
 - `kind` and `title` — `new_product` · `Confirm new vendor item: Parmesan, Shaved — US Foods 7929170 (4/5 LB → 320 oz)`; `each_weight` · `Each weight needed: Blackberries (½-pt clamshell)`; `reconcile` · `Line 7 won't reconcile: US Foods #949308`
 - `invoice_id`, `invoice_line_id`, `status` `open`
@@ -341,11 +379,14 @@ resting on that vendor item is called provisional in the report.
 
 **The write checker.** `workers/skills/invoice-intake/hooks/check-write.cjs`
 re-does the per-row rules (checks 1 and 2, `verified`, base units, the
-decision's shape) on every `create_row` / `update_row` the MCP stores, and
-returns a blocking reason when something is off. When it's wired as a
+decision's shape) on every row the MCP stores — each `create_row` /
+`update_row` / `upsert_row`, and each create, update or upsert inside a
+`write_rows` batch, named by its index — and returns a blocking reason when
+something is off. A batch has already landed when it speaks: fix the named
+rows with one more batch (or one `update_row` for one row). When it's wired as a
 PostToolUse hook its feedback arrives on its own; when it isn't, run the same
 checks by hand — the rules are identical. Mapping an accepted line
-(`update_row` with only `vendor_item_id`) is never re-judged. `node <that file>
+(an update of only `vendor_item_id`, alone or in a batch) is never re-judged. `node <that file>
 --self-test` proves the checker itself.
 
 ## Resuming
@@ -354,7 +395,8 @@ When the owner answers a parked decision in Bread 'n' Butter ("Needs your
 decision" on the invoice), the app writes the answer onto the `decisions` row
 (`status` `answered`, `answer`, `answered_by`, `answered_at`), applies what it
 can settle on its own (an each weight onto the ingredient, a dispute onto the
-invoice), and runs this skill again with:
+invoice), and — once the invoice's last open decision is answered, or when the
+owner presses "Finish with your answers" — runs this skill again with:
 
 ```
 { "invoice_id": "<invoices.id>" }
@@ -375,7 +417,10 @@ do not create the invoice or any line, and step 2b does not apply. Instead:
    `failed` ("no lines to finish — drop the invoice again").
 2. **Apply each answer** — each one only once (the app may already have
    written it: an each weight already on the ingredient, an invoice already
-   `disputed` are left as they are):
+   `disputed` are left as they are). An answer that writes more than one row
+   — an ingredient, its vendor item, the line's link and the decision marked
+   `done` — is ONE `write_rows`, so a refusal leaves the decision `answered`
+   and nothing half-made; a refusal is fixed and re-sent whole as in step 8:
    - **New product, approved** → the proposal in the notes becomes the rows:
      create the ingredient when it is NEW and none of that name exists
      (category, storage and unit from the proposal), create the vendor item
@@ -396,8 +441,12 @@ do not create the invoice or any line, and step 2b does not apply. Instead:
      already). The line stays as printed and is **not** linked until the
      vendor's credit is recorded.
    - **Handled** → nothing more than the row.
+   A line the owner corrected in the app (`read_values` set, `edited_by`
+   named) keeps the owner's values: never write the printed values back over
+   them.
 3. **Mark each applied row** `status` `done`, adding one line to its `notes`:
-   applied by the reading job, with the date.
+   applied by the reading job, with the date — inside the answer's own batch
+   when it wrote anything.
 4. **Map the lines that were waiting** — every line with no vendor item,
    supplies and disputed lines aside — by step 10, exactly as on a first
    reading. A line whose decision is still `open` stays as it is; a waiting

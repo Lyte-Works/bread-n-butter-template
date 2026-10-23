@@ -1,6 +1,7 @@
 # US Foods
 
-Learned from order #949308 (Hearth Food Garden, 2023-06-26, 19 lines, $1,252.07).
+Learned from orders #949308 (Hearth Food Garden, 2023-06-26, 19 lines, $1,252.07)
+and #930383 (2023-06-15, 21 lines, $2,181.62).
 
 ## Document types
 
@@ -47,6 +48,7 @@ Ordered Full/Part: <c>/<e>   Reserved Full / Part: <c>/<e>   $<case> CS / $<each
 
 EA is the price of one inner pack bought alone, marked up over case ÷ count.
 Seen: 1.5× (arugula 2/2 LB, garlic 4/5 LB, kosher salt 9/3 LB),
+1.15× (shallots 4/5 LB), 1.5× (pepperoni 2/5 LB), 1.45× (honey 6/5 LB),
 1.45× (tortillas 10/12 EA), 1.35× (grated parmesan 4/5 LB),
 1.2× (blackberries 12/.5 PT), 1.1× (scallions 4/2 LB). Single-pack cases show
 EA = CS.
@@ -68,3 +70,14 @@ EA = CS.
   extraction gave every line cleanly.
 - Mozzarella `LOG IN BRINE 11.45 OZ … (5 LB)` — the real each is the 11.45 oz
   log (7 per 5 lb), not the 5 lb pack.
+- **Catch weight priced per pound.** Chèvre log `(3/2.2-2.2#A)` printed
+  `$9.2 CS / $9.2 EA` with 2 cases extended at $121.44: $9.20 is per **lb**
+  (2 × 3 × 2.2 lb = 13.2 lb × $9.20). When quantity × price ≠ extended and
+  the pack is in pounds (`#A` = average pounds), divide extended by the
+  price: a whole number of pounds that matches the pack means per-lb
+  pricing. Write `unit_price` = extended ÷ cases ($60.72) and park a
+  `reconcile` decision for the delivered weight. `PR` (random weight) on
+  chicken breast is the same family — costed at nominal weight.
+- **An order confirmation sets no price** while its status is `ordered`
+  (migration 0008). When the owner confirms the goods arrived — or the order
+  is plainly in the past — write `received` and say so in a decision.
