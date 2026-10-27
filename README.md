@@ -9,6 +9,7 @@ Every restaurant on Bread 'n' Butter gets its own private copy of this repositor
 - **The restaurant MCP** — `.mcp.json`: the one door to the restaurant's data, its own Bread 'n' Butter MCP (`.lyte/mcp-manifest.md`). Every skill reads and writes through it; the repo holds no data, no database address and no key.
 - **The agent job** — `.github/workflows/agent-job.yml` ("Run a skill"): runs a skill headlessly with Claude Code on the restaurant's own API key against the restaurant MCP. The app starts it when the owner drops an invoice, and again when the owner answers a decision the reading parked. Anything that needs the owner's decision is left as a decision in the app, never guessed.
 - **Optional site code** — a restaurant's website can live here too; nothing in the template depends on it.
+  - `site/` is that website: a one-page starter the restaurant's AI and owner build on. `.lyte/preview.json` names it as the process the restaurant's runtime machine runs, and the Dev view on the Bread 'n' Butter app's Website screen shows it live. What is merged to `main` is what gets published.
 
 There is no re-cost job: every price and recipe cost is a view in the restaurant's database, computed on read.
 
