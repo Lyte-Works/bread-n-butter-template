@@ -1,0 +1,5 @@
+{
+  "processes": [
+    { "name": "web", "dir": "site", "primary": true }
+  ]
+}
