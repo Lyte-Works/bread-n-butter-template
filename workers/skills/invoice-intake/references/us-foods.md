@@ -74,10 +74,13 @@ EA = CS.
   `$9.2 CS / $9.2 EA` with 2 cases extended at $121.44: $9.20 is per **lb**
   (2 × 3 × 2.2 lb = 13.2 lb × $9.20). When quantity × price ≠ extended and
   the pack is in pounds (`#A` = average pounds), divide extended by the
-  price: a whole number of pounds that matches the pack means per-lb
-  pricing. Write `unit_price` = extended ÷ cases ($60.72) and park a
-  `reconcile` decision for the delivered weight. `PR` (random weight) on
-  chicken breast is the same family — costed at nominal weight.
+  price: a weight that the pack fits means per-lb pricing. Write the line as
+  `quantity` 2, `unit` CS, `unit_price` = extended ÷ cases ($60.72),
+  `total_cost` $121.44, and **`delivered_weight` 13.2, `delivered_weight_unit`
+  `lb`** — the database then costs it at $121.44 ÷ 13.2 lb = $9.2000/lb, not
+  at nominal weight. `PR` (random weight) on chicken breast is the same
+  family: record the weight when the invoice prints it; park a `reconcile`
+  decision for the delivered weight only when nothing on the paper gives it.
 - **An order confirmation sets no price** while its status is `ordered`
   (migration 0008). When the owner confirms the goods arrived — or the order
   is plainly in the past — write `received` and say so in a decision.
