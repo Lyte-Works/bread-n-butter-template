@@ -4,7 +4,8 @@
 //     every row the restaurant MCP just wrote (`create_row` / `update_row` /
 //     `upsert_row`, and every create / update / upsert inside a `write_rows`
 //     batch, on invoice_lines, vendor_items, ingredients, recipes,
-//     recipe_lines, decisions) and hands any mismatch back to the model as a
+//     recipe_lines, decisions, and kitchen-log's yield_logs,
+//     yield_log_outputs, stock_events) and hands any mismatch back to the model as a
 //     blocking reason. Wired as a PostToolUse hook on
 //     `mcp__.*__(create_row|update_row|upsert_row|write_rows)` (the restaurant
 //     repo's agent job wires it; .claude/settings.json can too). Reads the
@@ -25,6 +26,7 @@
 var TO_OZ = { oz: 1, lb: 16, g: 0.035274, kg: 35.274 };
 var TO_FLOZ = { 'fl oz': 1, l: 33.814, ml: 0.033814, gal: 128, qt: 32, pt: 16 };
 var BASE_UNITS = ['oz', 'fl oz', 'each'];
+var WEIGHTS = ['lb', 'oz', 'kg', 'g'];
 
 // Postgres numerics arrive as strings; an empty value is null.
 function num(v) {
@@ -51,6 +53,13 @@ function checkInvoiceLine(row, written, created, problems) {
   });
   // Only when a price or quantity was written: mapping a line (vendor_item_id) never re-judges its arithmetic,
   // so a line the owner accepted at its printed total stays as printed.
+  // A catch-weight line's delivered weight: both or neither, a real weight.
+  var dw = num(row.delivered_weight), dwu = row.delivered_weight_unit;
+  if ((dw === null) !== (dwu === null || dwu === undefined || dwu === '')) {
+    problems.push('`delivered_weight` and `delivered_weight_unit` go together — both or neither');
+  } else if (dw !== null && (!(dw > 0) || WEIGHTS.indexOf(dwu) < 0)) {
+    problems.push('the delivered weight is a weight more than 0 in lb, oz, kg or g (got ' + row.delivered_weight + ' ' + dwu + ')');
+  }
   if (!['quantity', 'unit_price', 'total_cost'].some(function (k) { return has(written, k); })) return;
   var q = num(row.quantity), p = num(row.unit_price), t = num(row.total_cost);
   if (q !== null && p !== null && t !== null && !close(q * p, t, 0, 0.011)) {
@@ -85,8 +94,18 @@ function checkIngredient(row, problems) {
 
 function checkRecipe(row, problems) {
   var yq = num(row.yield_quantity);
-  if (!(yq > 0)) problems.push('`yield_quantity` must be more than 0');
   var isPrep = row.is_prep === true || row.is_prep === 'true';
+  var credit = num(row.credit_per_unit);
+  if (credit !== null && credit !== 0) problems.push('`credit_per_unit` stays 0 — a by-product costs $0, and no skill writes a cost');
+  if (row.byproduct_of) {
+    // A by-product is the trim of a breakdown prep: a prep, no menu price, its yield unit only.
+    if (!isPrep) problems.push('a by-product (`byproduct_of`) is a prep');
+    if (num(row.menu_price) !== null) problems.push('a by-product has no `menu_price`');
+    if (!String(row.yield_unit || '').trim()) problems.push('a by-product needs a `yield_unit` — what its quantity is counted in');
+    if (yq !== null && !(yq > 0)) problems.push('`yield_quantity` must be more than 0, or empty on a by-product');
+    return;
+  }
+  if (!(yq > 0)) problems.push('`yield_quantity` must be more than 0');
   if (isPrep && num(row.menu_price) !== null) problems.push('a prep recipe has no `menu_price`');
   if (!isPrep && (yq !== 1 || row.yield_unit !== 'portion')) problems.push('a menu dish yields `1` `portion`');
 }
@@ -94,6 +113,34 @@ function checkRecipe(row, problems) {
 function checkRecipeLine(row, problems) {
   var q = num(row.quantity);
   if (!(q > 0)) problems.push('`quantity` must be more than 0 — a line with no real amount is asked about, not written');
+}
+
+function checkYieldLog(row, problems) {
+  var qin = num(row.input_quantity), qout = num(row.output_quantity);
+  if (!(qin > 0)) problems.push('`input_quantity` (the weight or count in) must be more than 0');
+  if (!(qout >= 0)) problems.push('`output_quantity` (the main weight out) must be 0 or more');
+  var w = num(row.input_weight), wu = row.input_weight_unit;
+  if ((w === null) !== (wu === null || wu === undefined || wu === '')) problems.push('`input_weight` and `input_weight_unit` go together — both or neither');
+  // Same weight unit in and out: the main output alone can never outweigh the input.
+  if (qin > 0 && qout !== null && row.input_unit && row.input_unit === row.output_unit && WEIGHTS.indexOf(row.input_unit) >= 0 && qout > qin) {
+    problems.push('the weight out (' + qout + ' ' + row.output_unit + ') is more than the weight in (' + qin + ' ' + row.input_unit + ')');
+  }
+}
+
+function checkYieldOutput(row, problems) {
+  if (!row.yield_log_id) problems.push('a by-product output names its `yield_log_id`');
+  if (!(num(row.quantity) >= 0)) problems.push('a by-product output\'s `quantity` is 0 or more');
+}
+
+function checkStockEvent(row, problems) {
+  var kind = row.kind, q = num(row.quantity);
+  if (['waste', 'closed', 'count'].indexOf(kind) < 0) problems.push('`kind` is waste, closed or count');
+  if (!!row.ingredient_id === !!row.recipe_id) problems.push('a stock event is about exactly one item: `ingredient_id` or `recipe_id`');
+  if (row.invoice_line_id && row.yield_log_id) problems.push('a stock event names at most one lot');
+  if (kind === 'waste' && !(q > 0)) problems.push('waste needs a `quantity` more than 0');
+  if (kind === 'count' && !(q >= 0)) problems.push('a count needs the `quantity` on hand');
+  if (kind === 'count' && (row.invoice_line_id || row.yield_log_id)) problems.push('a count sets the item\'s total — it names no lot');
+  if (kind === 'closed' && !row.invoice_line_id && !row.yield_log_id) problems.push('closing names the lot: the delivery (`invoice_line_id`) or the yield log');
 }
 
 function checkDecision(row, created, problems) {
@@ -115,6 +162,9 @@ function checkRow(table, row, written, created) {
     case 'recipes': checkRecipe(row, problems); break;
     case 'recipe_lines': checkRecipeLine(row, problems); break;
     case 'decisions': checkDecision(row, created, problems); break;
+    case 'yield_logs': checkYieldLog(row, problems); break;
+    case 'yield_log_outputs': checkYieldOutput(row, problems); break;
+    case 'stock_events': checkStockEvent(row, problems); break;
     default: return [];
   }
   return problems.map(function (p) { return table + ' ' + (row.id || '') + ': ' + p; });
@@ -228,6 +278,28 @@ function selfTest() {
   assert.deepStrictEqual(check(batch([{ op: 'delete', table: 'recipe_lines', id: 'x' }], [{ deleted: 'x' }])), [], 'a delete has no row to check');
   assert.deepStrictEqual(check({ tool_name: 'mcp__restaurant__write_rows', tool_input: { writes: good },
     tool_response: [{ type: 'text', text: 'write 2 refused: …; nothing was written' }] }), [], 'a refused batch rolled back — nothing to check');
+  // Catch weight on an invoice line.
+  var chevre = { invoice_id: 'i', description: 'CHEESE, GOAT LOG', quantity: '2', unit: 'CS', unit_price: '60.72', total_cost: '121.44', delivered_weight: '13.2', delivered_weight_unit: 'lb' };
+  assert.deepStrictEqual(check(call('create_row', 'invoice_lines', chevre, chevre)), [], 'a catch-weight line with its delivered weight passes');
+  assert.strictEqual(check(call('create_row', 'invoice_lines', chevre, Object.assign({}, chevre, { delivered_weight_unit: null }))).length, 1, 'a delivered weight needs its unit');
+  assert.strictEqual(check(call('create_row', 'invoice_lines', chevre, Object.assign({}, chevre, { delivered_weight_unit: 'cs' }))).length, 1, 'a delivered weight is a weight');
+
+  // kitchen-log's rows: a by-product, a yield log and its output, stock events.
+  var fat = { id: 'f', name: 'Hangar Fat Trim', is_prep: true, yield_quantity: null, yield_unit: 'lb', byproduct_of: 't', menu_price: null, credit_per_unit: '0' };
+  assert.deepStrictEqual(check(call('create_row', 'recipes', fat, fat)), [], 'a by-product with no yield quantity passes');
+  assert.strictEqual(check(call('create_row', 'recipes', fat, Object.assign({}, fat, { credit_per_unit: '2.5' }))).length, 1, 'a by-product credit is never written');
+  assert.strictEqual(check(call('create_row', 'recipes', fat, Object.assign({}, fat, { is_prep: false }))).length, 1, 'a by-product is a prep');
+  assert.strictEqual(check(call('create_row', 'recipes', {}, { is_prep: true, yield_unit: 'lb', yield_quantity: null })).length, 1, 'an ordinary prep still needs its yield');
+  var ylog = { invoice_line_id: 'l', recipe_id: 't', input_quantity: '2', input_unit: 'lb', output_quantity: '1.7', output_unit: 'lb' };
+  assert.deepStrictEqual(check(call('create_row', 'yield_logs', ylog, ylog)), [], 'a yield log passes');
+  assert.strictEqual(check(call('create_row', 'yield_logs', ylog, Object.assign({}, ylog, { output_quantity: '2.4' }))).length, 1, 'more out than in, by the same weight, blocks');
+  assert.strictEqual(check(call('create_row', 'yield_logs', ylog, Object.assign({}, ylog, { input_unit: 'each', input_quantity: '3', input_weight: '11.2' }))).length, 1, 'an actual weight needs its unit');
+  assert.deepStrictEqual(check(call('create_row', 'yield_log_outputs', {}, { yield_log_id: 'y', recipe_id: 'f', quantity: '0.3', unit: 'lb' })), [], 'a by-product output passes');
+  assert.deepStrictEqual(check(call('create_row', 'stock_events', {}, { kind: 'waste', recipe_id: 't', quantity: '0.375', unit: 'lb' })), [], 'waste passes');
+  assert.deepStrictEqual(check(call('create_row', 'stock_events', {}, { kind: 'closed', ingredient_id: 'g', invoice_line_id: 'l' })), [], 'closing a delivery passes');
+  assert.strictEqual(check(call('create_row', 'stock_events', {}, { kind: 'closed', ingredient_id: 'g' })).length, 1, 'closing names its lot');
+  assert.strictEqual(check(call('create_row', 'stock_events', {}, { kind: 'count', ingredient_id: 'g', invoice_line_id: 'l', quantity: '32', unit: 'oz' })).length, 1, 'a count names no lot');
+  assert.strictEqual(check(call('create_row', 'stock_events', {}, { kind: 'waste', ingredient_id: 'g', recipe_id: 't', quantity: '1', unit: 'lb' })).length, 1, 'one item per event');
   console.log('check-write: self-test passed');
 }
 

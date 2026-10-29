@@ -1,6 +1,6 @@
 ---
 name: recipe-entry
-description: Enter what goes into a dish — from a recipe card, a spreadsheet, a photo or a recipe someone dictates — as its recipe lines in the restaurant's database, through its Bread 'n' Butter MCP, each linked to an existing ingredient in that ingredient's unit or to a prep recipe in its yield unit, creating an ingredient only with the owner's say-so, flagging every line whose ingredient has no price yet, then explain the dish's cost with recipe-costing. Use whenever someone gives a dish's recipe, build, spec or ingredient list and asks to add, enter, build out, map or fix it, and after menu-import has created dishes with no lines.
+description: Enter what goes into a dish — from a recipe card, a spreadsheet, a photo or a recipe someone dictates — as its recipe lines in the restaurant's database, through its Bread 'n' Butter MCP, each linked to an existing ingredient in that ingredient's unit or to a prep recipe in its yield unit (a breakdown prep for a cut the kitchen trims, a $0 by-product for the trim it reuses), creating an ingredient only with the owner's say-so, flagging every line whose ingredient has no price yet, then explain the dish's cost with recipe-costing. Use whenever someone gives a dish's recipe, build, spec or ingredient list and asks to add, enter, build out, map or fix it, and after menu-import has created dishes with no lines.
 kind: procedure
 ---
 
@@ -51,6 +51,53 @@ recipe** the card needs and the database lacks (a house sauce, a dough) is
 created as a `recipes` row: `name`, `is_prep` `true`, `yield_quantity` and
 `yield_unit` from the card (`40` · `fl oz`), no `menu_price`. Its own lines are
 entered by this same procedure, **before** the dish that uses it.
+
+### Breakdown preps and by-products
+
+Much of what a kitchen buys is cut down before it is used: hangar steak is
+trimmed, chickens broken down, onions peeled. And the trim often feeds
+another recipe: the fat into bone broth, the carcasses into stock.
+
+- **A breakdown prep** is a prep with **exactly one line: the raw
+  ingredient**, in the ingredient's unit. `Hangar Steak, Trimmed` —
+  `is_prep` true, `yield_quantity` 1.6, `yield_unit` `lb`, one line 2 lb
+  Hangar Steak. That line and yield are its **standard**: the database uses
+  them only until the kitchen logs a real yield against a delivery
+  (kitchen-log), and then costs it from that delivery. Anything added to it —
+  a seasoning, a marinade — goes in a **further prep** that uses the
+  breakdown prep as a line (`Hangar Steak, Marinated`: 1.6 lb Hangar Steak,
+  Trimmed + the marinade), never as a second line on the breakdown prep.
+- **A by-product** is a prep that is the trim of a breakdown prep:
+  `recipes` row with `name` (`Hangar Fat Trim`), `is_prep` true,
+  `yield_unit` (`lb`), and **`byproduct_of`** the breakdown prep's id. **No
+  lines** (the database refuses them), no `yield_quantity`, no
+  `menu_price`; it costs **$0** per yield unit — the trim was paid for once,
+  in the steak — and `credit_per_unit` is left alone.
+- **A recipe uses a by-product like any prep**: a `sub_recipe_id` line in the
+  by-product's yield unit. `Bone Broth` gets the line 0.3 lb Hangar Fat Trim,
+  costed $0.0000.
+- **Trim is never an ingredient.** An ingredient is what the restaurant buys,
+  and only an invoice prices it; nobody buys fat trim, so a "Fat Trim"
+  ingredient would never get a price and every recipe using it would stay
+  cost incomplete. A card line of trim, bones, carcass, rinds or scraps the
+  kitchen makes itself is a by-product line — when its breakdown prep
+  doesn't exist yet, it is created first (with the owner's say-so, as any
+  new prep).
+
+Worked example — the card says *Bone Broth: 5 lb beef bones, 0.3 lb hangar
+fat trim, water; makes 4 qt*, and the kitchen trims its own hangar:
+
+| Write | Row |
+|---|---|
+| 1 | `recipes` Hangar Steak, Trimmed · prep · yields 1.6 lb (uuid T) — only if it isn't there |
+| 2 | `recipe_lines` T ← 2 lb Hangar Steak (the ingredient, unit `lb`) |
+| 3 | `recipes` Hangar Fat Trim · prep · `yield_unit` lb · `byproduct_of` T (uuid F) |
+| 4 | `recipes` Bone Broth · prep · yields 4 qt (uuid B) — only if it isn't there |
+| 5 | `recipe_lines` B ← 5 lb Beef Bones |
+| 6 | `recipe_lines` B ← 0.3 lb Hangar Fat Trim (`sub_recipe_id` F) — $0.0000 |
+
+One `write_rows`, preps before the lines that use them. Water is not a
+line. The fat line holds nothing back: a by-product is always priced.
 
 ### `ingredients`
 
@@ -173,6 +220,12 @@ Structural ingredients — flour, yeast, leavener, the salt in a dough — live
 line on the dish, not its raw ingredients inlined: the prep's own name is the
 modifier; what's inside it never is.
 
+**Trim is a by-product, never an ingredient** (Breakdown preps and
+by-products). A breakdown prep has one line, the raw ingredient; a
+by-product has none. A line the card gives as "fat trim (from the hangar)"
+points at the by-product prep, never at a new ingredient — and never as a
+0 lb line on the fat (a stopgap that is tied to nothing).
+
 **One source per line.** Exactly one of `ingredient_id` / `sub_recipe_id`. A
 recipe never uses itself. A prep that would contain itself is a loop — stop
 (the database would cost it *cost incomplete: loop or too deep*).
@@ -212,7 +265,8 @@ if the person says it's negligible, leave it off and say so.
 | 1 | Every card line accounted for | ready + no price + new ingredient + blocked + left off (with reason) = lines on the card |
 | 2 | One source each | every ready line has exactly one of ingredient / prep, and that source exists live |
 | 3 | Unit = source unit | every ready line's `unit` = its ingredient's `unit` / prep's `yield_unit`; every conversion shown with its factor |
-| 4 | Price known | every ready line's source has a price (`ingredient_costs` / a `costed` prep); every line without one is in the held list |
+| 4 | Price known | every ready line's source has a price (`ingredient_costs` / a `costed` prep — a by-product always is, at $0); every line without one is in the held list |
+| 4b | Breakdown shape | a breakdown prep has exactly one line, its raw ingredient; a by-product has `byproduct_of` set and no lines; no trim is an ingredient |
 
 **After writing**
 

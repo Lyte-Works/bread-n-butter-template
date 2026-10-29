@@ -1,6 +1,6 @@
 ---
 name: recipe-costing
-description: Explain what a dish or prep recipe costs right now — or on a past date — and why, from the restaurant's database through its Bread 'n' Butter MCP (`recipe_cost`): its total, cost per portion or yield unit, food cost %, every line's working down through its prep recipes, what moved it since the last delivery, and any food-cost alert. Use whenever someone asks what a dish costs, why its cost changed, which dishes are over target, or after invoice intake or recipe entry to report what moved. Costs are computed live; nothing is ever re-costed or written.
+description: Explain what a dish or prep recipe costs right now — or on a past date — and why, from the restaurant's database through its Bread 'n' Butter MCP (`recipe_cost`): its total, cost per portion or yield unit, food cost %, every line's working down through its prep recipes (a trimmed cut matched to its delivery's yield, estimated or at its standard yield; by-products at $0), what moved it since the last delivery, and any food-cost alert. Use whenever someone asks what a dish costs, why its cost changed, which dishes are over target, or after invoice intake or recipe entry to report what moved. Costs are computed live; nothing is ever re-costed or written.
 kind: procedure
 ---
 
@@ -32,6 +32,40 @@ the cost and explain it** in words a cook can check.
 A prep line's `working` names the prep's batch cost; call `recipe_cost` on its
 `sub_recipe_id` to go one level deeper.
 
+## Breakdown preps, yields and by-products
+
+A **breakdown prep** (a prep whose one line is a raw ingredient cut down
+before use — Hangar Steak, Trimmed from Hangar Steak) is costed per
+**usable** unit, with the price and the yield from the **same delivery**.
+`list_rows` `breakdown_costs` gives each one's `method`, `lot`, `yield_pct`,
+`label`, `working` and `heads_up`; its line in `recipe_cost` carries the same
+working. Three methods, always named:
+
+| Method | When | The cost is |
+|---|---|---|
+| **matched** | the newest delivery (skipping one still waiting under 3 days) has a yield log | that delivery's price × weight in ÷ weight out: `2.0 lb × $14.0000 per lb (Hangar Steak — US Foods #4471 2026-10-28) ÷ 1.7 lb trimmed (85% — yield log 2026-10-28, same delivery) = $16.4706 per lb` |
+| **estimated** | that delivery has waited 3 days or more with no yield log | its price ÷ the **usual yield** (the vendor's last 5 logs; else every vendor's; else the standard): `$14.0000 per lb ÷ 80% usual yield (US Foods, last 1 log) = $17.5000 per lb — estimated` |
+| **standard yield** | no yield log of this prep yet | like any prep: its one line ÷ its typed yield |
+
+- **The heads-up line** names a newer delivery still waiting under 3 days
+  and what it would cost at the usual yield ("the 10/30 delivery at the usual
+  82% would be $17.0732 per lb"). Quote it; it is not the cost yet.
+- **A by-product** (a prep that is the trim of a breakdown prep: Hangar Fat
+  Trim) costs **$0** per yield unit, and a recipe line on it is $0.0000. The
+  delivery's price is counted once, in the main cut; the working lists the
+  by-product as `+ 0.3 lb Hangar Fat Trim (by-product, $0)`.
+- **Yield alerts.** `list_rows` `yield_alerts`: a yield log more than **10
+  points** under the usual yield before it, with `alert` in words ("65%,
+  against US Foods' usual 82.5%"). Name it when a dish moved because of it —
+  a bad box costs more per usable pound.
+- **Usable vs paid.** `yield_by_vendor` gives each vendor's usual, lowest and
+  highest yield and `cost_per_usable_unit` (latest price ÷ usual yield). When
+  someone compares vendors on a trimmed item, compare these, not the raw
+  price.
+- **Delivered weight.** A catch-weight invoice line with a delivered weight
+  is priced by that weight (13.2 lb for $121.44 = $9.2000/lb), not the
+  case's nominal weight; the line's working names the invoice either way.
+
 The rounding is fixed: a line `round(quantity × unit cost, 4)`, the total
 `round(Σ lines, 4)`, per yield unit `round(total ÷ yield, 4)`, food cost
 `round(per portion ÷ menu price × 100, 1)`.
@@ -62,10 +96,12 @@ The rounding is fixed: a line `round(quantity × unit cost, 4)`, the total
   ingredient (`ingredient_costs`). invoice-intake's 15% cost-move flag is the
   guard against one odd invoice spreading into every recipe — mention it when
   a dish moved because of it.
-- **Raw weights.** Proteins are costed at purchased weight until ingredients
-  carry a cooking/trim yield; say so when a protein dish's food cost is quoted.
-- **Owner's words.** Say recipe, ingredient, invoice, vendor item, dish — never
-  the names of tables or views.
+- **Say the method.** A breakdown prep's cost is always quoted with its
+  method — matched (and the delivery), estimated (and the usual yield), or
+  standard yield — and an estimated or standard one is called that, never
+  passed off as matched.
+- **Owner's words.** Say recipe, ingredient, invoice, delivery, vendor item,
+  dish, by-product, yield — never the names of tables or views.
 
 ## Report
 
@@ -78,5 +114,15 @@ Arugula Salad — $2.68 a portion, food cost 20.6% (menu $13.00)
   ⚠ none over 30% · none up 2+ pts
 ```
 
-Then anything the owner should act on: alerts, menu dishes nearest the line,
-lines that are incomplete and what would complete them, protein at raw weight.
+A dish over a breakdown prep shows the prep's method in its line:
+
+```
+Steak Frites — $9.12 a portion, food cost 30.4% (menu $30.00)
+  0.5 lb × $16.4706 per lb (Hangar Steak, Trimmed: matched, 85% yield, US Foods #4471 2026-10-28) = $8.2353
+  …
+```
+
+Then anything the owner should act on: alerts (food cost and yield), menu
+dishes nearest the line, lines that are incomplete and what would complete
+them, breakdown preps still at their standard yield (a yield log would price
+them from a real delivery), and any heads-up.
