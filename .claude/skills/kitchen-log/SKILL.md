@@ -45,6 +45,11 @@ invoice line  (a delivery of one item — never split)
   Its line and yield are only its standard, used when no yield log exists.
 - A **by-product** is a prep with `byproduct_of` set to the breakdown prep it
   comes from. It has no lines and costs $0. Recipes use it like any prep.
+- A **cut** (rare; 0018) is a prep with `cut_of` set to the breakdown prep —
+  Chicken Breast, Leg and Wing of Chicken, Broken Down. It has no lines; the
+  delivery's cost is split across the cuts **by weight**, so every cut costs
+  the same per oz. Most breakdowns have none: only log cuts the recipes
+  already have.
 - **Trim is never an ingredient.** Ingredients are what the restaurant buys;
   nobody buys fat trim, so it would never get a price.
 
@@ -79,10 +84,22 @@ invoice line  (a delivery of one item — never split)
 Leave `input_unit` and `output_unit` out: the database fills them with the
 ingredient's and the prep's own, and refuses any other.
 
-### `yield_log_outputs` — one row per by-product
+### `yield_log_outputs` — one row per by-product, and per cut
 
-`yield_log_id` (the log's uuid), `recipe_id` (the by-product prep),
-`quantity` (in its yield unit; the unit fills itself).
+`yield_log_id` (the log's uuid), `recipe_id` (the by-product prep, or a cut
+of the breakdown prep), `quantity` (in its yield unit; the unit fills itself).
+
+**A breakdown prep with cuts** logs one output row per cut, and the log's
+`output_quantity` is **the cuts' total** in the breakdown prep's yield unit
+(the database checks it at commit and refuses a mismatch, naming the
+total). The by-products are rows as always, never in that total. "Broke
+down 12 chickens: 160 oz breast, 130 oz leg, 60 oz wing, 220 oz carcass"
+against Chicken, Broken Down (yield unit oz; cuts Breast, Leg, Wing; the
+carcass its by-product) is one log of 12 each in, `output_quantity` 350,
+and four outputs: Breast 160, Leg 130, Wing 60 (or 3.75 if Wing is counted
+in lb), Chicken Carcass 220. Report it as the yield of the meat — "350 of
+672 oz is meat (52.1%) — breast, leg and wing each $0.1368/oz" — and a cut
+the chef didn't weigh is asked about, never guessed or left out of the total.
 
 ### `stock_events` — waste, a delivery used up, a count
 
@@ -137,6 +154,11 @@ ingredient's and the prep's own, and refuses any other.
      More than one ("Chicken Parts" and "Chicken, Spatchcocked") → ask which.
    - Each **by-product**: a prep with `byproduct_of` = that breakdown prep,
      matched by name ("fat" → Hangar Fat Trim).
+   - Each **cut**, when the breakdown prep has them (`recipes` `{ cut_of }`):
+     matched by name ("breast" → Chicken Breast). Never create a cut from a
+     log — a chef listing parts against a breakdown prep with none logs the
+     meat as the main output and the trim as by-products, and says the parts
+     can be made cuts on Recipes if they should cost on their own.
    - **None exists yet → ask once** before creating it, with the rows you
      would write: "I'll add a prep *Hangar Steak, Trimmed* (2 lb Hangar Steak
      → 1.7 lb) and a by-product *Hangar Fat Trim*, $0 — OK?" Its standard
