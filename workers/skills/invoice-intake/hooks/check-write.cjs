@@ -6,7 +6,8 @@
 //     batch, on invoice_lines, vendor_items, ingredients, recipes,
 //     recipe_lines, decisions, stations, price-list-intake's price_list_lines,
 //     and kitchen-log's yield_logs,
-//     yield_log_outputs, stock_events) and hands any mismatch back to the model as a
+//     yield_log_outputs, stock_events, and sales-entry's sales_reports,
+//     sales_lines, pos_items) and hands any mismatch back to the model as a
 //     blocking reason. Wired as a PostToolUse hook on
 //     `mcp__.*__(create_row|update_row|upsert_row|write_rows)` (the restaurant
 //     repo's agent job wires it; .claude/settings.json can too). Reads the
@@ -61,11 +62,21 @@ function checkInvoiceLine(row, written, created, problems) {
   } else if (dw !== null && (!(dw > 0) || WEIGHTS.indexOf(dwu) < 0)) {
     problems.push('the delivered weight is a weight more than 0 in lb, oz, kg or g (got ' + row.delivered_weight + ' ' + dwu + ')');
   }
-  // A free-goods or credit line priced at $0 or less, linked to its product, would move that product's
-  // price: it stays unlinked and parked, whatever item code it carries.
-  if (row.vendor_item_id && [row.quantity, row.unit_price, row.total_cost].some(function (v) { return num(v) !== null && num(v) <= 0; })) {
-    problems.push('a free-goods or credit line ($0 or less) is never linked to a vendor item — it would move the product\'s price; ' +
-      'clear `vendor_item_id` and park a `reconcile` decision for it');
+  // A free line (0020) is received stock that never prices: more than 0 of it, at $0.
+  var isFree = row.free === true || row.free === 'true';
+  if (isFree && !(num(row.quantity) > 0 && num(row.total_cost) === 0 && (num(row.unit_price) === null || num(row.unit_price) === 0))) {
+    problems.push('a free line (`free` true) has a `quantity` more than 0 and a `unit_price` and `total_cost` of 0');
+  }
+  // A credit or a return (a quantity or price below 0), or a $0 line not marked free, linked to its product
+  // would move that product's price: it stays unlinked and parked, whatever item code it carries.
+  if (row.vendor_item_id && !isFree) {
+    var below = [row.quantity, row.unit_price, row.total_cost].some(function (v) { return num(v) !== null && num(v) < 0; });
+    if (below || (num(row.quantity) !== null && num(row.quantity) <= 0)) {
+      problems.push('a credit or return line (a quantity or price below 0, or no quantity) is never linked to a vendor item — it would move the product\'s price; ' +
+        'clear `vendor_item_id` and park a `reconcile` decision for it');
+    } else if ([row.unit_price, row.total_cost].some(function (v) { return num(v) === 0; })) {
+      problems.push('a $0 line is linked only as a free line — set `free` true (free goods, a sample), or clear `vendor_item_id` and park a `reconcile` decision');
+    }
   }
   if (!['quantity', 'unit_price', 'total_cost'].some(function (k) { return has(written, k); })) return;
   var q = num(row.quantity), p = num(row.unit_price), t = num(row.total_cost);
@@ -182,6 +193,68 @@ function checkDecision(row, created, problems) {
   }
 }
 
+// ─── sales-entry's rows: sales_reports · sales_lines · pos_items ─────────────
+// Kept as its own block (and its own self-test) so the invoice rules above can
+// change beside it. The database already refuses a bad kind, source or
+// effect; these are the rules it can't see.
+var SALES_KINDS = ['item', 'modifier', 'comp', 'void'];
+
+function checkSalesReport(row, created, problems) {
+  var d = String(row.business_date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) problems.push('a sales report names its `business_date` (the night, from the export)');
+  else if (d > new Date(Date.now() + 36e5 * 14).toISOString().slice(0, 10)) problems.push('the business date ' + d + ' has not happened yet');
+  if (created && num(row.net_sales) === null) problems.push('a sales report carries the export\'s printed `net_sales` — the total its lines reconcile to');
+  if (row.item_count !== null && row.item_count !== undefined && !(num(row.item_count) >= 0)) problems.push('`item_count` is the items sold, 0 or more');
+}
+
+function checkSalesLine(row, created, problems) {
+  if (created && !row.report_id) problems.push('a sales line names its `report_id`');
+  if (SALES_KINDS.indexOf(row.kind) < 0) problems.push('`kind` is item, modifier, comp or void');
+  if (!(num(row.quantity) > 0)) problems.push('a sales line is what the export printed: a `quantity` more than 0');
+  if (row.kind === 'modifier' && !row.parent_line_id) problems.push('a modifier sits under its item: set `parent_line_id` to the item line it modifies');
+  if (row.kind !== 'modifier' && row.parent_line_id) problems.push('only a modifier has a `parent_line_id` — a ' + row.kind + ' line is its own line');
+  if (row.kind === 'comp' && num(row.net_sales) !== null && num(row.net_sales) !== 0) problems.push('a comp is given away: its `net_sales` is $0 (the comp is a discount, already out of the item\'s net)');
+  if (created && (row.kind === 'item' || row.kind === 'modifier') && num(row.net_sales) === null) problems.push('an ' + row.kind + ' line carries its printed `net_sales` ($0 when it printed none)');
+}
+
+function checkPosItem(row, problems) {
+  if (!String(row.matched_by || '').trim()) problems.push('a POS item says who matched it (`matched_by`: the owner, or "assistant: unmistakable")');
+  if (row.effect === 'add' && !String(row.unit || '').trim()) problems.push('an `add` modifier names the `unit` of what it adds');
+}
+
+var SALES_CHECKS = {
+  sales_reports: function (row, created, problems) { checkSalesReport(row, created, problems); },
+  sales_lines: function (row, created, problems) { checkSalesLine(row, created, problems); },
+  pos_items: function (row, created, problems) { checkPosItem(row, problems); },
+};
+
+function selfTestSales() {
+  var assert = require('assert');
+  function batch(writes, rows) {
+    return { tool_name: 'mcp__restaurant__write_rows', tool_input: { writes: writes },
+      tool_response: [{ type: 'text', text: JSON.stringify({ results: rows.map(function (r) { return { row: r }; }) }) }] };
+  }
+  var rep = { id: 'r', source: 'toast', business_date: '2026-10-28', net_sales: '2373', item_count: '157' };
+  var steak = { id: 'l1', report_id: 'r', item_name: 'Hangar Steak Frites', pos_key: '400101', quantity: '14', net_sales: '476', kind: 'item', parent_line_id: null };
+  var rare = { id: 'l2', report_id: 'r', item_name: 'Medium Rare', quantity: '8', net_sales: '0', kind: 'modifier', parent_line_id: 'l1' };
+  var comp = { id: 'l3', report_id: 'r', item_name: 'Brûléed Banana', quantity: '1', net_sales: '0', kind: 'comp', parent_line_id: null };
+  var pi = { id: 'p', source: 'toast', item_name: 'Extra Shallot Cream', effect: 'add', sub_recipe_id: 's', quantity: '2', unit: 'fl oz', matched_by: 'owner@x.test' };
+  var all = [rep, steak, rare, comp, pi];
+  var tables = ['sales_reports', 'sales_lines', 'sales_lines', 'sales_lines', 'pos_items'];
+  var writes = all.map(function (r, i) { return { op: 'create', table: tables[i], values: r }; });
+  assert.deepStrictEqual(check(batch(writes, all)), [], 'a night and its POS item pass');
+  var bad = function (i, patch) { var rows = all.slice(); rows[i] = Object.assign({}, all[i], patch); return check(batch(writes, rows)); };
+  assert.strictEqual(bad(0, { net_sales: null }).length, 1, 'a report carries its printed net');
+  assert.strictEqual(bad(0, { business_date: '2999-01-01' }).length, 1, 'a night in the future blocks');
+  assert.strictEqual(bad(2, { parent_line_id: null }).length, 1, 'a modifier sits under its item');
+  assert.strictEqual(bad(3, { parent_line_id: 'l1' }).length, 1, 'a comp is its own line');
+  assert.strictEqual(bad(3, { net_sales: '10' }).length, 1, 'a comp nets $0');
+  assert.strictEqual(bad(1, { quantity: '0' }).length, 1, 'a line has a quantity');
+  assert.strictEqual(bad(4, { matched_by: '' }).length, 1, 'a POS item says who matched it');
+  assert.deepStrictEqual(check(batch([{ op: 'delete', table: 'sales_reports', id: 'old' }].concat(writes), [{ deleted: 'old' }].concat(all))).length, 0, 'a re-entry (delete, then the night) passes');
+  console.log('check-write: sales self-test passed');
+}
+
 // One stored row → its problems, each prefixed with the table and id.
 function checkRow(table, row, written, created) {
   var problems = [];
@@ -197,7 +270,9 @@ function checkRow(table, row, written, created) {
     case 'stock_events': checkStockEvent(row, problems); break;
     case 'stations': checkStation(row, problems); break;
     case 'price_list_lines': checkPriceListLine(row, created, problems); break;
-    default: return [];
+    default:
+      if (!SALES_CHECKS[table]) return [];
+      SALES_CHECKS[table](row, created, problems);
   }
   return problems.map(function (p) { return table + ' ' + (row.id || '') + ': ' + p; });
 }
@@ -343,6 +418,16 @@ function selfTest() {
   assert.strictEqual(check(call('update_row', 'invoice_lines', { vendor_item_id: 'vi' }, Object.assign({}, free, { quantity: '1', vendor_item_id: 'vi' }))).length, 1, 'linking a $0 line by its item code blocks');
   var credit = Object.assign({}, line, { quantity: '-1', unit_price: '27.47', total_cost: '-27.47', vendor_item_id: 'vi' });
   assert.strictEqual(check(call('create_row', 'invoice_lines', credit, credit)).length, 1, 'a linked credit line blocks');
+  // A free line (0020): linked at $0 only when `free` is true.
+  var cab = { invoice_id: 'i', description: 'CABERNET SAUV 750ML — 13TH BOTTLE FREE', quantity: '1', unit: 'EA', unit_price: '0', total_cost: '0', vendor_item_id: 'vi', free: true };
+  assert.deepStrictEqual(check(call('create_row', 'invoice_lines', cab, cab)), [], 'a linked free line passes');
+  assert.deepStrictEqual(check(call('update_row', 'invoice_lines', { vendor_item_id: 'vi', free: true }, cab)), [], 'linking a $0 line as free passes');
+  assert.strictEqual(check(call('create_row', 'invoice_lines', cab, Object.assign({}, cab, { free: false }))).length, 1, 'a linked $0 line not marked free blocks');
+  assert.strictEqual(check(call('create_row', 'invoice_lines', cab, Object.assign({}, cab, { unit_price: '11', total_cost: '11' }))).length, 1, 'a free line with a price blocks');
+  assert.ok(check(call('create_row', 'invoice_lines', cab, Object.assign({}, cab, { quantity: '0' }))).length >= 1, 'a free line with no quantity blocks');
+  assert.ok(check(call('create_row', 'invoice_lines', credit, Object.assign({}, credit, { free: true }))).length >= 1, 'a credit marked free still blocks');
+  var ret = Object.assign({}, line, { quantity: '-2', unit_price: '0', total_cost: '0', vendor_item_id: 'vi' });
+  assert.strictEqual(check(call('create_row', 'invoice_lines', ret, ret)).length, 1, 'a linked return at $0 blocks');
   assert.deepStrictEqual(check(call('create_row', 'stations', {}, { id: 's', name: 'Ovens', sort_order: 1 })), [], 'a station passes');
   assert.strictEqual(check(call('create_row', 'stations', {}, { id: 's', name: '  ', sort_order: 1 })).length, 1, 'a station has a name');
   assert.strictEqual(check(call('update_row', 'recipes', { station_id: 's' }, { is_prep: false, yield_quantity: '1', yield_unit: 'portion', menu_price: '9', station_id: 's' })).length, 0, 'a dish on a station passes');
@@ -357,7 +442,7 @@ function selfTest() {
 }
 
 if (require.main === module) {
-  if (process.argv[2] === '--self-test') { selfTest(); process.exit(0); }
+  if (process.argv[2] === '--self-test') { selfTest(); selfTestSales(); process.exit(0); }
   var buf = '';
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', function (c) { buf += c; });
