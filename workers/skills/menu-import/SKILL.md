@@ -33,6 +33,25 @@ is recipe-entry's job.
 | `is_prep` | `false` — always. A menu dish is never a prep recipe |
 | `yield_quantity` | `1` |
 | `yield_unit` | `portion` |
+| `station_id` | The station the owner confirmed for this dish (below); empty until then |
+
+A **prep** belongs to a station just as a dish does — the marinara to the
+kitchen, the simple syrup to the bar. This skill writes no prep rows of its
+own (recipe-entry creates them from the cards), but every station proposal
+places the restaurant's preps as well as its dishes (step 5), and the
+`station_id` it sets on a prep follows the same confirmation.
+
+### `stations` — where the business makes things, in the owner's words
+
+| Column | Fill with |
+|---|---|
+| `name` | The station's name as the owner confirmed it ("Kitchen", "Bar", "Ovens", "Front Counter", "Espresso Bar"). Unique ignoring case and surrounding spaces |
+| `sort_order` | Its place in the owner's list, 1 first |
+
+A station is the business's own: a new restaurant has none, and there is no
+fixed list, and "Prep" is never one: a prep is made at a real station. This
+skill **proposes** stations from how the menu is organised and **creates
+them only on the owner's say-so**.
 
 Never written by this skill: `location_id` (leave empty). There is no cost
 column — a dish's cost is the view `recipe_costs`, and it reads *cost
@@ -55,16 +74,44 @@ incomplete* until recipe-entry gives the dish its lines.
    (case- and punctuation-insensitive). Already there → it is not created
    again; a price that differs is listed for the person, never overwritten
    silently.
-5. **The human gate — show the parsed menu before the first write.** One table:
+5. **Propose stations** — only when the menu itself shows where dishes are
+   made or served, and the restaurant's `stations` (`list_rows`) don't
+   already cover it. Read the menu's own organisation: a drinks or bar list
+   apart from the food, a bakery case, a coffee program, a "from the oven"
+   section, a separate brunch counter. Propose the fewest stations that
+   follow it, named in the menu's or the business's own words (a bakery's
+   "Ovens" and "Front Counter", a café's "Espresso Bar" — never "kitchen"
+   or "bar" by default), and which dishes go to each. A dish the menu
+   doesn't place stays without one. An existing station that fits is
+   reused, never created twice. One room, one menu → no proposal; say so.
+   **Preps go in the same proposal**: every prep with no station
+   (`list_rows` `recipes` `is_prep` true, `station_id` empty) is proposed
+   for the station the dishes using it (its `sub_recipe_id` lines, through
+   any prep in between) would all be on; dishes split across stations, or
+   none placed yet → the prep is listed with no station and why ("Garlic
+   Confit: used on Kitchen and Bar dishes"). A prep that already has a
+   station keeps it.
+6. **The human gate — show the parsed menu before the first write.** One table:
    section, name, price, and per row `new` · `exists` · `exists, price differs`,
    plus every judgement call (a size split, a market-price dish, an item left
-   out and why). Write only after the person confirms it. **When no person is
-   present** (a lane, the repo's agent job): do not write. Park the decision as
-   one `decisions` row (`create_row`) with `kind` `menu_import`, `status`
-   `open`, `title` `Confirm menu import — <restaurant> (<n> dishes)` and the
-   full table in `notes` — then stop and report that it is parked.
-6. **Write the menu in one go**: every `new` dish of the confirmed table as a
-   `create` on `recipes` in ONE `write_rows`, in menu order — the whole menu
+   out and why) — and, beside it, the proposed stations with their dishes and
+   preps as a separate question: the owner keeps, renames, merges or drops each one, or
+   says no stations yet. Write only after the person confirms it. **When no
+   person is present** (a lane, the repo's agent job): do not write. Park the
+   decision as one `decisions` row (`create_row`) with `kind` `menu_import`,
+   `status` `open`, `title` `Confirm menu import — <restaurant> (<n> dishes)`
+   and the full table in `notes`; and, when there is a proposal, park ONE
+   more, `kind` `menu_import`, `title` `Stations for this menu?`, with each
+   proposed station, its dishes and why (the menu's section or list it
+   follows) and each prep with the station its dishes put it on in `notes`
+   — then stop and report what is parked. No station is
+   ever created headless.
+7. **Write the menu in one go**: every `new` dish of the confirmed table as a
+   `create` on `recipes` in ONE `write_rows`, in menu order — and, when the
+   owner confirmed stations, each new station as a `create` on `stations`
+   first in the same batch (the id chosen here), each dish carrying its
+   `station_id`, then an `update` of `station_id` on each existing prep
+   the owner confirmed a station for — the whole menu
    lands or none of it does, never a half-imported menu that looks finished.
    More than 200 dishes → batches of 200, in menu order; each batch is whole,
    and a re-run re-matches by name (step 4), so a batch that already landed
@@ -75,10 +122,10 @@ incomplete* until recipe-entry gives the dish its lines.
    price that isn't a number), and re-send the whole batch. Never drop the
    dish to make the rest go through: a dish left out is said so at the gate,
    not by the error.
-7. **Verify** — every check in Verification below, every import. Fix what
+8. **Verify** — every check in Verification below, every import. Fix what
    fails, re-run, then report.
-8. **Hand off** to **recipe-entry**: the list of new dish ids and names, in
-   menu order. Say plainly that the dishes have no cost yet — food cost appears
+9. **Hand off** to **recipe-entry**: the list of new dish ids and names, in
+   menu order, with each dish's station (or none). Say plainly that the dishes have no cost yet — food cost appears
    only after their recipes are entered and costed.
 
 ## Judgement rules
@@ -132,15 +179,25 @@ first). ("Leave it as it is." never reaches you: the app settles it.)
 
 1. **Load the decision** (`get_row` on `decisions`). Not `answered`, or not
    `menu_import` → write nothing; report why.
-2. **The table in `notes` is the confirmed gate** (step 5) — re-read
+2. **The table in `notes` is the confirmed gate** (step 6) — re-read
    `recipes` live and re-match by name, so a dish added since is `exists`, not
    created twice. An edit that doesn't settle a row on its own (which dish,
    which price) → set the row back to `open`, adding to `notes` what you need.
-3. **Write and verify** as steps 6–7, with the decision's `done` (one line
+3. **Write and verify** as steps 7–8, with the decision's `done` (one line
    added to `notes`: applied by the job, with the date) as an `update` at the
    end of the last batch — so the decision is marked done exactly when its
    dishes are in, and a refused batch leaves it `answered` to run again.
-4. **Hand off** as step 8.
+4. **Hand off** as step 9.
+
+**A `Stations for this menu?` decision** resumes the same way, on its own:
+`Approved as proposed.` → create the stations in `notes` (reusing any that
+exist by name, ignoring case and spaces) and set `station_id` on their
+dishes and preps that exist, in ONE `write_rows` ending with the decision's
+`done`; `Edit before adding: <note>` → apply the owner's names, merges and
+moves first. A dish or prep whose station the owner has set since is left
+as it is. A dish
+the decision names that isn't imported yet gets its station when the menu
+decision lands.
 
 A resumed run never asks anyone: what it still can't settle it parks again.
 
@@ -161,6 +218,7 @@ A resumed run never asks anyone: what it still can't settle it parks again.
 |---|---|---|
 | 5 | Read-back | listing `recipes` returns every written row with the values sent — `name`, `category`, `menu_price`, `is_prep false`, `yield_quantity 1`, `yield_unit portion` |
 | 6 | Close | rows created + rows already present = dishes on the menu; nothing created that wasn't on the confirmed table |
+| 7 | Stations | every station created was confirmed by the owner, by name, and none is "Prep"; every dish's and prep's `station_id` is the one confirmed for it, or empty (a prep: its dishes split or unplaced, said so) |
 
 Report it as a table, every time — ✓ or ⚠ per check with the numbers, e.g.
 `✓ 1 Count 32 = 32 (Mezze 9 · Mains 12 · Sides 6 · Desserts 5)` ·
@@ -169,7 +227,8 @@ say what it blocks and what would clear it.
 
 ## Report
 
-The Verification table first, then: dishes created, dishes already present
+The Verification table first, then: dishes created, stations created (or
+proposed and parked, or none — and why) with the dishes and preps on each, dishes already present
 (with any price that differs from the database's row), judgement calls (size
 splits, market price, items left out and why), the source and how it was read
 (page, PDF, photo, export), and the hand-off line:

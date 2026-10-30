@@ -49,14 +49,47 @@ are the view `recipe_line_costs`, computed on read.
 The dish already exists (menu-import made it, or the person did). A **prep
 recipe** the card needs and the database lacks (a house sauce, a dough) is
 created as a `recipes` row: `name`, `is_prep` `true`, `yield_quantity` and
-`yield_unit` from the card (`40` · `fl oz`), no `menu_price`. Its own lines are
-entered by this same procedure, **before** the dish that uses it.
+`yield_unit` from the card (`40` · `fl oz`), no `menu_price`, and its
+`station_id` by the station rule below. Its own lines are entered by this
+same procedure, **before** the dish that uses it.
+
+### `recipes.station_id` — the dish's or prep's station
+
+A station is where the business makes a recipe, in the owner's own words —
+`stations` (`name`, `sort_order`), the owner's list, which this skill only
+reads. **A prep belongs to a station like a dish does**: the marinara is
+made in the kitchen, the simple syrup at the bar. "Prep" is never a station
+and never stands in for one.
+
+A **dish** with no station is set to an **existing** one when:
+
+- the owner names it ("the margarita's a bar drink") — matched to a
+  `stations` row by name, ignoring case and surrounding spaces; or
+- its menu section already maps to one: the other dishes with its
+  `category` that have a station are all on the same one.
+
+A **prep** with no station is set to an **existing** one when:
+
+- the owner names it ("the syrup's made at the bar") — matched the same way; or
+- the recipes that use it (its `sub_recipe_id` lines, and the dish this
+  card is for) all have a station and are all on the same one — counting a
+  prep this same rule just placed, so a prep used only inside another prep
+  follows it; or
+- it is a by-product no recipe uses yet, and its breakdown prep has a
+  station: the trim comes off the same board.
+
+Otherwise it stays empty, and the report says so ("no station yet — Recipes
+→ Station sets it"); a prep whose dishes are split across stations is named
+with them ("Garlic Confit: used on Kitchen and Bar dishes — which makes
+it?"). A station the owner names that doesn't exist is asked about, never
+created. A dish or prep that already has a station keeps it, whatever its
+section or its dishes say.
 
 ### Breakdown preps and by-products
 
 Much of what a kitchen buys is cut down before it is used: hangar steak is
 trimmed, chickens broken down, onions peeled. And the trim often feeds
-another recipe: the fat into bone broth, the carcasses into stock.
+another recipe: the fat rendered into beef tallow, the carcasses into stock.
 
 - **A breakdown prep** is a prep with **exactly one line: the raw
   ingredient**, in the ingredient's unit. `Hangar Steak, Trimmed` —
@@ -74,7 +107,7 @@ another recipe: the fat into bone broth, the carcasses into stock.
   `menu_price`; it costs **$0** per yield unit — the trim was paid for once,
   in the steak — and `credit_per_unit` is left alone.
 - **A recipe uses a by-product like any prep**: a `sub_recipe_id` line in the
-  by-product's yield unit. `Bone Broth` gets the line 0.3 lb Hangar Fat Trim,
+  by-product's yield unit. `Beef Tallow` gets the line 1 lb Hangar Fat Trim,
   costed $0.0000.
 - **Trim is never an ingredient.** An ingredient is what the restaurant buys,
   and only an invoice prices it; nobody buys fat trim, so a "Fat Trim"
@@ -84,20 +117,26 @@ another recipe: the fat into bone broth, the carcasses into stock.
   doesn't exist yet, it is created first (with the owner's say-so, as any
   new prep).
 
-Worked example — the card says *Bone Broth: 5 lb beef bones, 0.3 lb hangar
-fat trim, water; makes 4 qt*, and the kitchen trims its own hangar:
+Worked example — the card says *Beef Tallow: 1 lb hangar fat trim,
+rendered; makes 12 oz*, the kitchen trims its own hangar, and Hangar Steak
+Frites (on Kitchen) bastes its steak in 0.5 oz of the tallow:
 
 | Write | Row |
 |---|---|
-| 1 | `recipes` Hangar Steak, Trimmed · prep · yields 1.6 lb (uuid T) — only if it isn't there |
+| 1 | `recipes` Hangar Steak, Trimmed · prep · yields 1.6 lb · station Kitchen (uuid T) — only if it isn't there |
 | 2 | `recipe_lines` T ← 2 lb Hangar Steak (the ingredient, unit `lb`) |
-| 3 | `recipes` Hangar Fat Trim · prep · `yield_unit` lb · `byproduct_of` T (uuid F) |
-| 4 | `recipes` Bone Broth · prep · yields 4 qt (uuid B) — only if it isn't there |
-| 5 | `recipe_lines` B ← 5 lb Beef Bones |
-| 6 | `recipe_lines` B ← 0.3 lb Hangar Fat Trim (`sub_recipe_id` F) — $0.0000 |
+| 3 | `recipes` Hangar Fat Trim · prep · `yield_unit` lb · `byproduct_of` T · station Kitchen (uuid F) |
+| 4 | `recipes` Beef Tallow · prep · yields 12 oz · station Kitchen (uuid B) — only if it isn't there |
+| 5 | `recipe_lines` B ← 1 lb Hangar Fat Trim (`sub_recipe_id` F) — $0.0000 |
+| 6 | `recipe_lines` Hangar Steak Frites ← 0.5 oz Beef Tallow (`sub_recipe_id` B) |
 
-One `write_rows`, preps before the lines that use them. Water is not a
-line. The fat line holds nothing back: a by-product is always priced.
+One `write_rows`, preps before the lines that use them. The preps land on
+Kitchen by the station rule: the tallow because Hangar Steak Frites uses it,
+the fat trim because the tallow does, and the trimmed steak because the dish
+already uses it (a new one nothing uses yet stays empty, said so — and then
+its fat trim does too, unless the owner names the station). The fat line holds
+nothing back: a by-product is always priced, so the tallow costs $0 and the
+steak's 0.5 oz line costs $0.0000.
 
 ### `ingredients`
 
@@ -113,7 +152,8 @@ there is one, is the view `ingredient_costs` (`cost_per_unit`, `priced_on`,
 1. **Read the card.** Text, spreadsheet, photo (say quantities are read from an
    image) or dictation (repeat it back as a list). List every line as written:
    quantity, unit, item, and any prep note ("minced", "toasted").
-2. **Read the database live**: the dish's `recipes` row and its existing
+2. **Read the database live**: the dish's `recipes` row (its `category` and
+   `station_id`), the `stations`, and its existing
    `recipe_lines` (`list_rows` filter `recipe_id`); all `ingredients` (`name`,
    `unit`, `each_weight_oz`, `density_oz_per_floz`) with their
    `ingredient_costs`; all prep recipes (`recipes` filter `is_prep` true:
@@ -149,7 +189,11 @@ there is one, is the view `ingredient_costs` (`cost_per_unit`, `priced_on`,
 8. **Write the dish's lines in one go**: every ready line as a `create` on
    `recipe_lines` in ONE `write_rows` — with, ahead of them, any new
    ingredient the owner confirmed (its uuid chosen by you, so the line can
-   name it). A dish is never left with half its card. Check the stored rows
+   name it), and, when the dish has no station and one applies (the
+   station rule above), an `update` of its `station_id` in the same batch —
+   and likewise for any existing prep this card uses that has none and
+   whose dishes now agree on one.
+   A dish is never left with half its card. Check the stored rows
    in the reply against what was sent (links, quantity, unit).
    **Refused** → nothing was written; the refusal names the failing write's
    index — read that line, fix it (both sources set, a unit that isn't the
@@ -230,6 +274,13 @@ points at the by-product prep, never at a new ingredient — and never as a
 recipe never uses itself. A prep that would contain itself is a loop — stop
 (the database would cost it *cost incomplete: loop or too deep*).
 
+**Stations are the owner's.** This skill puts a dish on a station that
+exists, by the owner's word or its section's, and a prep on one by the
+owner's word or the station its dishes agree on; it never creates, renames
+or deletes a station, and never changes a station the owner set — not even
+when the section or the dishes point elsewhere (ask instead). A prep is
+never left on a "Prep" station or category in place of a real one.
+
 **Supplies aren't ingredients.** Foil, the to-go box, gloves: not lines.
 
 **Delete only your own mistake.** `delete_row` on `recipe_lines` removes a
@@ -273,6 +324,7 @@ if the person says it's negligible, leave it off and say so.
 | # | Check | Pass when |
 |---|---|---|
 | 5 | Read-back | listing the dish's `recipe_lines` returns every written line with the values sent, and every line it had before |
+| 5b | Station | the dish's and every new prep's `station_id` is unchanged if it had one; set only to an existing station the owner named, the dish's section maps to, or (a prep) its dishes all share; otherwise empty and said so |
 | 6 | Costed | `recipe_cost` on the dish: every written line's `status` is `costed` (a `unit mismatch` or `cost incomplete` line is a ⚠ with its cause) |
 
 Report it as a table, every time — ✓ or ⚠ per check with the numbers, e.g.
@@ -285,6 +337,7 @@ silent: say what it blocks and what would clear it.
 The Verification table first, then per dish: lines written (source, quantity,
 unit, line cost from `recipe_cost`), lines held and why (no price · new
 ingredient · blocked unit), conversions applied, prep recipes created with
-their yield, any decision parked (its title), and the dish's cost per portion
+their yield and station, the dish's station (set and why, kept, or none yet), any
+decision parked (its title), and the dish's cost per portion
 and food cost % from `recipe_cost` — called **incomplete** while any line is
 held.

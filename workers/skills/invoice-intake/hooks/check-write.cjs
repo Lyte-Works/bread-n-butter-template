@@ -4,7 +4,8 @@
 //     every row the restaurant MCP just wrote (`create_row` / `update_row` /
 //     `upsert_row`, and every create / update / upsert inside a `write_rows`
 //     batch, on invoice_lines, vendor_items, ingredients, recipes,
-//     recipe_lines, decisions, and kitchen-log's yield_logs,
+//     recipe_lines, decisions, stations, price-list-intake's price_list_lines,
+//     and kitchen-log's yield_logs,
 //     yield_log_outputs, stock_events) and hands any mismatch back to the model as a
 //     blocking reason. Wired as a PostToolUse hook on
 //     `mcp__.*__(create_row|update_row|upsert_row|write_rows)` (the restaurant
@@ -59,6 +60,12 @@ function checkInvoiceLine(row, written, created, problems) {
     problems.push('`delivered_weight` and `delivered_weight_unit` go together — both or neither');
   } else if (dw !== null && (!(dw > 0) || WEIGHTS.indexOf(dwu) < 0)) {
     problems.push('the delivered weight is a weight more than 0 in lb, oz, kg or g (got ' + row.delivered_weight + ' ' + dwu + ')');
+  }
+  // A free-goods or credit line priced at $0 or less, linked to its product, would move that product's
+  // price: it stays unlinked and parked, whatever item code it carries.
+  if (row.vendor_item_id && [row.quantity, row.unit_price, row.total_cost].some(function (v) { return num(v) !== null && num(v) <= 0; })) {
+    problems.push('a free-goods or credit line ($0 or less) is never linked to a vendor item — it would move the product\'s price; ' +
+      'clear `vendor_item_id` and park a `reconcile` decision for it');
   }
   if (!['quantity', 'unit_price', 'total_cost'].some(function (k) { return has(written, k); })) return;
   var q = num(row.quantity), p = num(row.unit_price), t = num(row.total_cost);
@@ -127,6 +134,21 @@ function checkYieldLog(row, problems) {
   }
 }
 
+// A station is the owner's word for where things are made: a name, never blank.
+function checkStation(row, problems) {
+  if (!String(row.name || '').trim()) problems.push('a station needs the `name` the owner gave it');
+}
+
+// An order guide line keeps its place on the paper (0017): 1…n, written on every line created.
+function checkPriceListLine(row, created, problems) {
+  var pos = row.position;
+  if (pos === null || pos === undefined || pos === '') {
+    if (created) problems.push('a price list line carries its printed `position` (1 for the first line on the paper)');
+  } else if (!(Number.isInteger(num(pos)) && num(pos) >= 1)) {
+    problems.push('`position` is a whole number from 1, in printed order');
+  }
+}
+
 function checkYieldOutput(row, problems) {
   if (!row.yield_log_id) problems.push('a by-product output names its `yield_log_id`');
   if (!(num(row.quantity) >= 0)) problems.push('a by-product output\'s `quantity` is 0 or more');
@@ -165,6 +187,8 @@ function checkRow(table, row, written, created) {
     case 'yield_logs': checkYieldLog(row, problems); break;
     case 'yield_log_outputs': checkYieldOutput(row, problems); break;
     case 'stock_events': checkStockEvent(row, problems); break;
+    case 'stations': checkStation(row, problems); break;
+    case 'price_list_lines': checkPriceListLine(row, created, problems); break;
     default: return [];
   }
   return problems.map(function (p) { return table + ' ' + (row.id || '') + ': ' + p; });
@@ -300,6 +324,23 @@ function selfTest() {
   assert.strictEqual(check(call('create_row', 'stock_events', {}, { kind: 'closed', ingredient_id: 'g' })).length, 1, 'closing names its lot');
   assert.strictEqual(check(call('create_row', 'stock_events', {}, { kind: 'count', ingredient_id: 'g', invoice_line_id: 'l', quantity: '32', unit: 'oz' })).length, 1, 'a count names no lot');
   assert.strictEqual(check(call('create_row', 'stock_events', {}, { kind: 'waste', ingredient_id: 'g', recipe_id: 't', quantity: '1', unit: 'lb' })).length, 1, 'one item per event');
+
+  // Free goods and credits, and stations (0016).
+  var free = Object.assign({}, line, { id: 'l9', description: 'PARMESAN GRATED (FREE GOODS)', unit_price: '0', total_cost: '0' });
+  assert.deepStrictEqual(check(call('create_row', 'invoice_lines', free, Object.assign({}, free, { quantity: '1' }))), [], 'a free-goods line held unlinked passes');
+  assert.strictEqual(check(call('update_row', 'invoice_lines', { vendor_item_id: 'vi' }, Object.assign({}, free, { quantity: '1', vendor_item_id: 'vi' }))).length, 1, 'linking a $0 line by its item code blocks');
+  var credit = Object.assign({}, line, { quantity: '-1', unit_price: '27.47', total_cost: '-27.47', vendor_item_id: 'vi' });
+  assert.strictEqual(check(call('create_row', 'invoice_lines', credit, credit)).length, 1, 'a linked credit line blocks');
+  assert.deepStrictEqual(check(call('create_row', 'stations', {}, { id: 's', name: 'Ovens', sort_order: 1 })), [], 'a station passes');
+  assert.strictEqual(check(call('create_row', 'stations', {}, { id: 's', name: '  ', sort_order: 1 })).length, 1, 'a station has a name');
+  assert.strictEqual(check(call('update_row', 'recipes', { station_id: 's' }, { is_prep: false, yield_quantity: '1', yield_unit: 'portion', menu_price: '9', station_id: 's' })).length, 0, 'a dish on a station passes');
+  // Order guide lines in printed order (0017).
+  var pll = { id: 'p', price_list_id: 'pl', item_code: 'HF-100', description: 'FLOUR AP 50 LB', unit_price: '32', unit: 'CS', position: 3 };
+  assert.deepStrictEqual(check(call('create_row', 'price_list_lines', pll, pll)), [], 'a price list line with its position passes');
+  assert.strictEqual(check(call('create_row', 'price_list_lines', pll, Object.assign({}, pll, { position: null }))).length, 1, 'a created line carries its position');
+  assert.strictEqual(check(call('create_row', 'price_list_lines', pll, Object.assign({}, pll, { position: 0 }))).length, 1, 'a position starts at 1');
+  assert.strictEqual(check(call('create_row', 'price_list_lines', pll, Object.assign({}, pll, { position: '2.5' }))).length, 1, 'a position is whole');
+  assert.deepStrictEqual(check(call('update_row', 'price_list_lines', { vendor_item_id: 'vi' }, Object.assign({}, pll, { position: null, vendor_item_id: 'vi' }))), [], 'linking a line written before 0017 passes');
   console.log('check-write: self-test passed');
 }
 

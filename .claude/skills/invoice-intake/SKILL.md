@@ -309,6 +309,18 @@ Virgin (Bag-in-Box)". Keep the vendor's raw text in `description` — never edit
 codes don't. Found → that vendor item, its ingredient, its conversion; nothing
 to decide. Not found → a new product: propose it.
 
+**Free goods and credits are never linked by item code.** A line at $0 (free
+goods, a sample, "N/C", a promo case) or below $0 (a credit, a return, a
+mis-pick taken back), or with a quantity of 0 or less, often carries the
+product's own item code — and linking it would move that product's price:
+a $0 line prices every recipe above it at nothing, a negative one below
+nothing. Such a line is written **as printed and left unlinked**
+(`vendor_item_id` empty, whatever its code), and parked as a `reconcile`
+decision: `title` `Free goods / credit line: <description> — <vendor> #<invoice>`,
+`notes` with the line, the product its code names, and what clears it (the
+owner says how to treat it — usually nothing, the price stays the paid
+lines'). The write checker blocks a linked one.
+
 **Proposing a new product.** Look for an existing ingredient first (same thing
 the kitchen uses, any vendor — `list_rows` on `ingredients`). Only create an
 ingredient when none fits. Rules the owner set:
@@ -370,6 +382,7 @@ before a number is trusted; the owner signs off where judgement is needed.
 | 2 | Conversions, two ways | `base_units_per_case` computed from the pack = the number you write = the number your working ends in |
 | 3 | Pack unchanged | the line's printed pack = its vendor item's pack. Different → **stop**: the vendor changed the pack under the same code; never apply the old conversion (park `other`) |
 | 3b | Catch weight | every catch-weight line has `delivered_weight` + unit, or an open `reconcile` decision asking for it; no other line has one |
+| 3c | Free goods and credits | no line at $0 or less (or a quantity of 0 or less) is linked to a vendor item, whatever its item code; each has an open `reconcile` decision |
 | 4 | Unit crossover | weight→oz, volume→fl oz, count→each need nothing else. Anything crossing kinds needs `each_weight_oz` / `density_oz_per_floz` on the ingredient — empty → **stop and ask**, never guess |
 | 5 | Cost move | the line's new cost per base unit vs the ingredient's price before it (`ingredient_costs` before writing): more than **15%** either way → flag (a conversion slip shows up as a huge jump; a real price spike is worth knowing too) |
 | 6 | Vendor gap | the same ingredient from two vendors more than **2×** apart per base unit → flag as a likely conversion error |
@@ -422,7 +435,9 @@ something is off. A batch has already landed when it speaks: fix the named
 rows with one more batch (or one `update_row` for one row). When it's wired as a
 PostToolUse hook its feedback arrives on its own; when it isn't, run the same
 checks by hand — the rules are identical. Mapping an accepted line
-(an update of only `vendor_item_id`, alone or in a batch) is never re-judged. `node <that file>
+(an update of only `vendor_item_id`, alone or in a batch) never re-judges its
+arithmetic — but a line at $0 or less, or a quantity of 0 or less, is never
+linked at all (free goods and credits, Mapping). `node <that file>
 --self-test` proves the checker itself.
 
 ## Resuming
