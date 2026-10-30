@@ -11,10 +11,11 @@ A skill is a procedure the AI loads when the task matches its `description`: rea
 | `menu-import` | A menu (URL, PDF, photo, POS export) → one `recipes` row per dish | `recipe-entry` |
 | `recipe-entry` | A recipe card, sheet or dictated build → the dish's `recipe_lines` | `recipe-costing` |
 | `invoice-intake` | A vendor invoice → `invoices` + `invoice_lines`, each line linked to its vendor item; finishes an invoice whose parked decisions were answered | `recipe-costing` (to report what moved) |
+| `sales-entry` | One night's POS sales export (Toast, Square, Clover) → `sales_reports` + `sales_lines`, reconciled to the cent, each POS item matched once in `pos_items`; runs headless in the "Run a skill" job | `recipe-costing` (to report food cost by station) |
 | `recipe-costing` | Explains what a dish costs now (or on a date) and why, from `recipe_cost` and `cost_alerts`; never computes or writes a cost | — |
 | `lane-brief` | The six-part brief for a dispatched worker | — |
 
-The script beside them: `invoice-intake/hooks/check-write.cjs`, the write checker — it re-does the per-row arithmetic on every `create_row` / `update_row` the restaurant MCP stores (`--self-test` runs its cases).
+The script beside them: `invoice-intake/hooks/check-write.cjs`, the write checker — it re-does the per-row arithmetic on every `create_row` / `update_row` the restaurant MCP stores (`--self-test` runs its cases). And `sales-entry/read-export.cjs`, the POS export reader (`--self-test` too).
 
 Nothing is costed by hand and nothing is re-costed: an ingredient's price and every recipe's cost are views in the restaurant's database, computed on read from the latest invoice lines.
 

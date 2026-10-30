@@ -1,0 +1,21 @@
+Toast,Product Mix - Items,TEST RESTAURANT (mock),Business date 10/28/2026
+Menu Group,Menu Item,Item ID,Modifier Of,Qty Sold,Comp Qty,Void Qty,Gross Sales,Discounts,Net Sales
+Small Plates,Whipped Goat Cheese,400401,,10,0,0,140.00,0.00,140.00
+Small Plates,Bread Service,400901,,5,0,0,0.00,0.00,0.00
+Soups,Chicken & Lime Soup,400201,,9,0,0,108.00,0.00,108.00
+Flatbreads,Pepperoni Flatbread,400301,,12,0,0,216.00,0.00,216.00
+Mains,Hangar Steak Frites,400101,,14,0,0,476.00,0.00,476.00
+Mains,Roast Half Chicken,400102,,11,0,0,286.00,0.00,286.00
+Mains,Medium Rare,,Hangar Steak Frites,8,0,0,0.00,0.00,0.00
+Mains,Extra Shallot Cream,,Hangar Steak Frites,3,0,0,6.00,0.00,6.00
+Sides,Side of Fries,400601,,6,0,0,48.00,0.00,48.00
+Desserts,Brûléed Banana,400501,,6,1,0,70.00,10.00,60.00
+Cocktails,Margarita,500101,,18,0,1,252.00,0.00,252.00
+Cocktails,Ranch Water,500102,,9,0,0,108.00,0.00,108.00
+Cocktails,Mezcal Mule,500103,,7,0,0,105.00,0.00,105.00
+Cocktails,Aperol Spritz,500104,,8,0,0,104.00,0.00,104.00
+Wine,"Cabernet Sauvignon, Glass",500301,,12,0,0,168.00,0.00,168.00
+Wine,"Cabernet Sauvignon, Bottle",500302,,2,0,0,96.00,0.00,96.00
+Beer,"Local IPA, Pint",500201,,22,0,0,176.00,0.00,176.00
+Non-Alcoholic,"Topo Chico, Bottle",500401,,6,0,0,24.00,0.00,24.00
+,Total,,,,,,,,2373.00
