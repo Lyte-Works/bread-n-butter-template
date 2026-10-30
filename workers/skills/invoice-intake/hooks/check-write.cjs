@@ -112,6 +112,14 @@ function checkRecipe(row, problems) {
     if (yq !== null && !(yq > 0)) problems.push('`yield_quantity` must be more than 0, or empty on a by-product');
     return;
   }
+  if (row.cut_of) {
+    // A cut of a breakdown prep (0018): a prep, weighed, with its usual yield from one batch.
+    if (!isPrep) problems.push('a cut (`cut_of`) is a prep');
+    if (num(row.menu_price) !== null) problems.push('a cut has no `menu_price`');
+    if (WEIGHTS.indexOf(row.yield_unit) < 0) problems.push('a cut is split by weight: its `yield_unit` is lb, oz, kg or g');
+    if (!(yq > 0)) problems.push('a cut needs its usual yield (`yield_quantity`): how much one batch of its breakdown prep gives');
+    return;
+  }
   if (!(yq > 0)) problems.push('`yield_quantity` must be more than 0');
   if (isPrep && num(row.menu_price) !== null) problems.push('a prep recipe has no `menu_price`');
   if (!isPrep && (yq !== 1 || row.yield_unit !== 'portion')) problems.push('a menu dish yields `1` `portion`');
@@ -314,6 +322,10 @@ function selfTest() {
   assert.strictEqual(check(call('create_row', 'recipes', fat, Object.assign({}, fat, { credit_per_unit: '2.5' }))).length, 1, 'a by-product credit is never written');
   assert.strictEqual(check(call('create_row', 'recipes', fat, Object.assign({}, fat, { is_prep: false }))).length, 1, 'a by-product is a prep');
   assert.strictEqual(check(call('create_row', 'recipes', {}, { is_prep: true, yield_unit: 'lb', yield_quantity: null })).length, 1, 'an ordinary prep still needs its yield');
+  var breast = { id: 'b', name: 'Chicken Breast', is_prep: true, yield_quantity: '13', yield_unit: 'oz', cut_of: 'c', menu_price: null };
+  assert.deepStrictEqual(check(call('create_row', 'recipes', breast, breast)), [], 'a cut with its usual yield passes');
+  assert.strictEqual(check(call('create_row', 'recipes', breast, Object.assign({}, breast, { yield_unit: 'each' }))).length, 1, 'a cut is weighed');
+  assert.strictEqual(check(call('create_row', 'recipes', breast, Object.assign({}, breast, { yield_quantity: null }))).length, 1, 'a cut needs its usual yield');
   var ylog = { invoice_line_id: 'l', recipe_id: 't', input_quantity: '2', input_unit: 'lb', output_quantity: '1.7', output_unit: 'lb' };
   assert.deepStrictEqual(check(call('create_row', 'yield_logs', ylog, ylog)), [], 'a yield log passes');
   assert.strictEqual(check(call('create_row', 'yield_logs', ylog, Object.assign({}, ylog, { output_quantity: '2.4' }))).length, 1, 'more out than in, by the same weight, blocks');

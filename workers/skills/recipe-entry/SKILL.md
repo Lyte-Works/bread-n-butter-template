@@ -109,6 +109,17 @@ another recipe: the fat rendered into beef tallow, the carcasses into stock.
 - **A recipe uses a by-product like any prep**: a `sub_recipe_id` line in the
   by-product's yield unit. `Beef Tallow` gets the line 1 lb Hangar Fat Trim,
   costed $0.0000.
+- **Cuts — only when the kitchen asks for them.** The default stays one
+  breakdown prep (Chicken, Broken Down: the meat, by the oz). When the
+  kitchen wants its parts on the menu as their own lines — a whole fryer into
+  breast, leg and wing — each part is a **cut**: a `recipes` row with `name`
+  (`Chicken Breast`), `is_prep` true, `yield_unit` a weight, `yield_quantity`
+  its usual yield from one batch of the breakdown prep (13 oz a fryer), and
+  **`cut_of`** the breakdown prep's id. No lines, no `menu_price`, never also
+  a by-product, never a cut of a cut; it takes its breakdown prep's station.
+  Every cut costs **the same per unit of weight** — the delivery's cost ÷ the
+  cuts' total weight, not by what a breast is worth — so a dish uses a cut
+  like any prep (4 oz Chicken Breast) and the carcass stays a $0 by-product.
 - **Trim is never an ingredient.** An ingredient is what the restaurant buys,
   and only an invoice prices it; nobody buys fat trim, so a "Fat Trim"
   ingredient would never get a price and every recipe using it would stay
@@ -317,7 +328,7 @@ if the person says it's negligible, leave it off and say so.
 | 2 | One source each | every ready line has exactly one of ingredient / prep, and that source exists live |
 | 3 | Unit = source unit | every ready line's `unit` = its ingredient's `unit` / prep's `yield_unit`; every conversion shown with its factor |
 | 4 | Price known | every ready line's source has a price (`ingredient_costs` / a `costed` prep — a by-product always is, at $0); every line without one is in the held list |
-| 4b | Breakdown shape | a breakdown prep has exactly one line, its raw ingredient; a by-product has `byproduct_of` set and no lines; no trim is an ingredient |
+| 4b | Breakdown shape | a breakdown prep has exactly one line, its raw ingredient; a by-product has `byproduct_of` set and no lines; a cut has `cut_of` set, no lines, a weighed yield unit and its usual yield; no trim is an ingredient |
 
 **After writing**
 
