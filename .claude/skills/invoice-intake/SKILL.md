@@ -147,7 +147,9 @@ There is no price column: the price is the latest invoice line.
 
 When the app hands you a dropped file, its payload carries `reading_id`: the
 row the app wrote at the hand-off. The job closes it from your outcome
-(Running headless); you only read it.
+(Running headless); you only read it. A file the owner uploaded that is
+still `waiting` has no job to close it — you close it yourself (Reading the
+owner's uploads).
 
 ### Categories (`category` values)
 
@@ -549,6 +551,27 @@ once and read it as step 1 would (or hand it to price-list-intake with the
 same `reading_id`). Only when that is refused (404: the reading has no stored
 file; 503: the app has no storage) report `failed`, naming the reading's
 `file_name`, and leave the decision `answered`.
+
+## Reading the owner's uploads
+
+Uploads aren't read automatically unless the owner switched that on: a file
+uploaded in the app is stored and waits as an `invoice_readings` row with
+`status` `waiting`. When the owner asks you to read their uploads (or a
+scheduled run comes round):
+
+1. `list_rows` on `invoice_readings` with `{ status: "waiting" }` — say how
+   many, and their `file_name`s.
+2. For each, oldest first: `get_vendor_file { reading_id }` (a 15-minute
+   link — download it at once) and read it from step 1, exactly as a
+   hand-off with that `reading_id` (an order guide, price sheet or quote goes
+   to price-list-intake; a document you can't tell parks a `document_kind`
+   decision on the reading).
+3. Close its row as the job would, with `update_row` on `invoice_readings`:
+   `status` `read` (or `duplicate`, or `failed` with why), `kind`,
+   `invoice_id` or `price_list_id`, a one-line `summary`, `finished_at` now.
+   One that fails doesn't stop the rest.
+4. Report each file in a line: what it was, where it went, what waits on the
+   owner.
 
 ## Running headless
 
