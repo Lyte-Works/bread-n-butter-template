@@ -80,9 +80,11 @@ ingredients ←── vendor_items ──→ vendors (rep, cutoff, delivery days
 | `pack` | The pack **as printed** (`4/1 LB`, `115 CT`, `10# AVG`) — text, never broken down here |
 | `unit_price` | The price per `unit`, as printed |
 | `unit` | What `unit_price` is per: `CS` (the case) · `EA` (one inner pack, a split) · `LB` (a pound — catch-weight meat and fish, produce sold by the pound) |
+| `position` | Where the line sits on the paper: `1` for the first line printed, then `2`, `3` … `n` in printed order (a spreadsheet's row order, top to bottom; across pages, page by page). Every line you create carries one; the Order Guides screen reads the guide in this order |
 
 A line offering both a case and a split price is **two lines**, one `CS` and
-one `EA`, the same code on both. A line with no price ("market", "call", "out
+one `EA`, the same code on both, at consecutive positions (case first). A
+line with no price ("market", "call", "out
 of stock") is written with `unit_price` empty and the word in `description`
 as printed — the sheet said it, so it stays — and it never links.
 
@@ -131,8 +133,9 @@ and never comes back.
    prices on the first and last lines → it is in; write nothing, say which,
    and stop. A second quote for the same day with different prices is not a
    duplicate — it is a revised quote, and the newer row wins in the view.
-4. **List every line before writing anything**: code, description, brand,
-   pack, price, unit. Count them against any printed count; a spreadsheet's
+4. **List every line before writing anything**, in printed order and
+   numbered from 1 (its `position`): code, description, brand, pack, price,
+   unit. An unreadable line keeps its number. Count them against any printed count; a spreadsheet's
    row count is its count. A line you cannot read is listed as unreadable,
    never skipped and never filled in.
 5. **Match** every line now (Matching), so the batch links the known ones.
@@ -142,7 +145,8 @@ and never comes back.
    without `file_path` and say so.
 7. **Write it in one batch.** One `write_rows`, in order: the vendor (only if
    none was found), the price list, every vendor item the owner approved,
-   every line (linked or not), then any decisions parked. All or nothing.
+   every line (linked or not, each with its `position`), then any decisions
+   parked. All or nothing.
    - **Refused** → nothing landed. Read the failing write's index, fix it,
      re-send the **whole** batch with the same uuids. Never line by line.
    - **No answer** → `get_row` on the price list's uuid says whether it
@@ -151,7 +155,8 @@ and never comes back.
      batch, the decisions after. A document of more than 199 lines can't land
      whole: stop and say so; never split a price list across two rows.
 8. **Read it back** — `list_rows` on `price_list_lines` for this price list:
-   the count, and the values of every line, match what you sent.
+   the count, and the values of every line, match what you sent, and the
+   positions run 1…n with none missing or repeated.
 9. **Read the prices back** — `list_rows` on `ingredient_vendor_prices`
    filtered by each linked ingredient: a `price_list` row from this vendor
    whose `source_id` is this price list and `source_line_id` the line,

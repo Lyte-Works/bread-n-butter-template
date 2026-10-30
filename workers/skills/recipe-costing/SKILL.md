@@ -28,6 +28,7 @@ the cost and explain it** in words a cook can check.
 | `list_rows` `recipe_costs` | every recipe at once (filter `is_prep`, sort `-food_cost_pct`) |
 | `list_rows` `cost_alerts` | dishes over **30%**, or up **2+ points** since the day before the latest delivery |
 | `list_rows` `ingredient_costs` | each ingredient's price per base unit, the date and the vendor it came from |
+| `list_rows` `recipe_held_lines` `{ recipe_id }` | `held`: how many card lines are **held** — parked by recipe-entry because their ingredient doesn't exist yet, has no price, or its unit can't convert — on the recipe **and every prep beneath it**, with their `decision_ids` and `titles`. A held line was never written, so the cost above doesn't count it, even when `status` says `costed` |
 
 A prep line's `working` names the prep's batch cost; call `recipe_cost` on its
 `sub_recipe_id` to go one level deeper.
@@ -87,7 +88,13 @@ The rounding is fixed: a line `round(quantity × unit cost, 4)`, the total
    price yet — an invoice line for it will price it; or a prep under it is
    itself incomplete). An incomplete recipe has **no** total: never quote a
    partial sum as its cost.
-5. **Report** (below).
+5. **Read its held lines** — `recipe_held_lines` for the recipe. `held` > 0
+   → name each one (its title says the line and what clears it) and call the
+   cost **incomplete**: "$2.40 a portion, 16.0% — incomplete: 2 lines held
+   (sea salt on the Dough, the honey)". The figure is what the written lines
+   cost; never present it as the dish's cost, never as a food cost to act
+   on, even though the database says `costed`.
+6. **Report** (below).
 
 ## Rules
 
@@ -100,6 +107,9 @@ The rounding is fixed: a line `round(quantity × unit cost, 4)`, the total
   method — matched (and the delivery), estimated (and the usual yield), or
   standard yield — and an estimated or standard one is called that, never
   passed off as matched.
+- **Held lines make a cost incomplete.** A dish whose held count is above 0
+  is reported as incomplete, with every held line named — a 3.3% food cost
+  with its banana missing is not a 3.3% dish.
 - **Owner's words.** Say recipe, ingredient, invoice, delivery, vendor item,
   dish, by-product, yield — never the names of tables or views.
 
@@ -122,7 +132,15 @@ Steak Frites — $9.12 a portion, food cost 30.4% (menu $30.00)
   …
 ```
 
-Then anything the owner should act on: alerts (food cost and yield), menu
+A dish with held lines says so on its first line:
+
+```
+Brûléed Banana — $0.30 a portion so far, food cost 3.3% (menu $9.00) — incomplete: 1 line held
+  ⚠ held: Banana — no price yet (it lands with the next invoice that prices it)
+```
+
+Then anything the owner should act on: held lines and the question that
+clears each, alerts (food cost and yield), menu
 dishes nearest the line, lines that are incomplete and what would complete
 them, breakdown preps still at their standard yield (a yield log would price
 them from a real delivery), and any heads-up.
